@@ -42,6 +42,7 @@ pub struct CosmicConnect {
 #[derive(Clone, Debug)]
 pub enum Message {
     TogglePopup,
+    RefreshDevices,
     PopupClosed(Id),
     BackendReady(Arc<KdeConnectBackend>),
     DevicesUpdated(Vec<Device>),
@@ -175,6 +176,17 @@ impl cosmic::Application for CosmicConnect {
                     get_popup(popup_settings)
                 };
             }
+            Message::RefreshDevices => {
+                let Some(backend) = self.backend.clone() else {
+                    self.error = Some("KDE Connect backend unavailable".into());
+                    return Task::none();
+                };
+
+                return Task::perform(async move { backend.devices().await }, |devices| {
+                    Message::DevicesUpdated(devices)
+                })
+                .map(cosmic::Action::App);
+            }
             Message::PopupClosed(popup_id) => {
                 if self.popup.as_ref() == Some(&popup_id) {
                     self.popup = None;
@@ -212,10 +224,13 @@ impl cosmic::Application for CosmicConnect {
 
                 self.draft_mut(&device_id).status = Some("Working...".into());
 
+                let device_id_for_task = device_id.clone();
+                let action_for_task = action.clone();
+
                 return Task::perform(
                     async move {
                         backend
-                            .perform_action(&device_id, &action)
+                            .perform_action(&device_id_for_task, &action_for_task)
                             .await
                             .map_err(|e| e.to_string())
                     },
@@ -257,6 +272,27 @@ impl cosmic::Application for CosmicConnect {
 
         content.push(divider::horizontal::default().into());
 
+        let status_text = if self.backend.is_some() {
+            "Backend connected"
+        } else {
+            "Connecting to KDE Connect"
+        };
+
+        content.push(
+            container(
+                row![
+                    text::caption(status_text),
+                    button::custom(text::caption("Refresh"))
+                        .on_press(Message::RefreshDevices)
+                        .padding([2, 8]),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+            )
+            .padding([8, 16, 4, 16])
+            .into(),
+        );
+
         if let Some(err) = &self.error {
             content.push(
                 container(
@@ -294,8 +330,10 @@ impl cosmic::Application for CosmicConnect {
                     content.push(divider::horizontal::default().into());
                 }
 
-                let empty_draft = DeviceDraft::default();
-                let draft = self.drafts.get(&device.id).unwrap_or(&empty_draft);
+                let draft = self
+                    .drafts
+                    .get(&device.id)
+                    .expect("draft state should exist for each device");
                 content.push(device_row(device, draft).into());
             }
         }

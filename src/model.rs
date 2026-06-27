@@ -23,6 +23,29 @@ impl Device {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{Device, DeviceType};
+
+    #[test]
+    fn has_plugin_prefers_loaded_plugins_when_available() {
+        let device = Device {
+            id: "device-1".into(),
+            name: "Test Device".into(),
+            device_type: DeviceType::Phone,
+            is_reachable: true,
+            is_paired: true,
+            pair_state: 3,
+            battery: None,
+            supported_plugins: vec!["kdeconnect_ping".into(), "kdeconnect_clipboard".into()],
+            loaded_plugins: vec!["kdeconnect_ping".into()],
+        };
+
+        assert!(device.has_plugin("kdeconnect_ping"));
+        assert!(!device.has_plugin("kdeconnect_clipboard"));
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BatteryInfo {
     pub charge: i32,
