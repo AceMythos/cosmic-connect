@@ -1,0 +1,17 @@
+[package]
+name = "cosmic-connect"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures-util = "0.3"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+rev = "417923fbafc0f38a63846b307036e4f20fc4960d"
+default-features = false
+features = ["applet", "tokio", "wayland"]

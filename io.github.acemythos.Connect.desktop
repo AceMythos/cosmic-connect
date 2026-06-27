@@ -1,0 +1,15 @@
+[Desktop Entry]
+Name=COSMIC Connect
+Comment=Connect your devices with KDE Connect
+Type=Application
+Exec=cosmic-connect
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Connect;KDEConnect;Phone;
+Icon=phone-symbolic
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-CosmicShrinkable=false
+X-OverflowPriority=10
