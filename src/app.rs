@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ashpd::desktop::file_chooser::SelectedFiles;
 use cosmic::app::Core;
 use cosmic::iced::core::Alignment;
 use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
@@ -53,13 +54,13 @@ pub enum Message {
     ShareTextChanged(String, String),
     ShareUrlChanged(String, String),
     FilePathChanged(String, String),
+    ChooseFile(String),
+    FileChooserFinished(String, Result<String, String>),
+    ReadClipboard(String),
+    ClipboardReadFinished(String, Result<String, String>),
 }
 
 impl CosmicConnect {
-    fn connected_count(&self) -> usize {
-        self.devices.iter().filter(|d| d.is_reachable).count()
-    }
-
     fn pair_state_label(pair_state: i32, is_paired: bool) -> &'static str {
         match pair_state {
             1 => "Pairing requested",
@@ -83,34 +84,6 @@ impl CosmicConnect {
         }
     }
 
-    fn header_view(&self) -> Element<'_, Message> {
-        let connected = self.connected_count();
-
-        let icon_name = if connected > 0 {
-            "phone-connected-symbolic"
-        } else if self.devices.is_empty() {
-            "phone-symbolic"
-        } else {
-            "phone-offline-symbolic"
-        };
-
-        let content: Element<'_, Message> = if connected > 0 {
-            row![
-                icon::from_name(icon_name).size(14),
-                text::body(format!("{connected}")),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center)
-            .into()
-        } else {
-            icon::from_name(icon_name).size(18).into()
-        };
-
-        button::custom(content)
-            .on_press_down(Message::TogglePopup)
-            .padding([4, 8])
-            .into()
-    }
 }
 
 impl cosmic::Application for CosmicConnect {
@@ -195,6 +168,8 @@ impl cosmic::Application for CosmicConnect {
             Message::BackendReady(backend) => {
                 self.backend = Some(backend);
                 self.error = None;
+                return Task::perform(async {}, |_| Message::RefreshDevices)
+                    .map(cosmic::Action::App);
             }
             Message::DevicesUpdated(devices) => {
                 self.devices = devices;
@@ -215,6 +190,50 @@ impl cosmic::Application for CosmicConnect {
             }
             Message::FilePathChanged(device_id, value) => {
                 self.draft_mut(&device_id).selected_file = value;
+            }
+            Message::ChooseFile(device_id) => {
+                let device_id_for_task = device_id.clone();
+                return Task::perform(
+                    async move { pick_file_path().await },
+                    move |result| Message::FileChooserFinished(device_id_for_task, result),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::FileChooserFinished(device_id, result) => {
+                let draft = self.draft_mut(&device_id);
+                match result {
+                    Ok(path) => {
+                        draft.selected_file = path.clone();
+                        draft.status = Some(format!("Selected file: {path}"));
+                    }
+                    Err(error) => {
+                        if error.to_lowercase().contains("cancel") {
+                            draft.status = None;
+                        } else {
+                            draft.status = Some(error);
+                        }
+                    }
+                }
+            }
+            Message::ReadClipboard(device_id) => {
+                let device_id_for_task = device_id.clone();
+                return Task::perform(
+                    async move { read_clipboard_text().await },
+                    move |result| Message::ClipboardReadFinished(device_id_for_task, result),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::ClipboardReadFinished(device_id, result) => {
+                let draft = self.draft_mut(&device_id);
+                match result {
+                    Ok(text) => {
+                        draft.clipboard_text = text.clone();
+                        draft.status = Some("Clipboard contents loaded".into());
+                    }
+                    Err(error) => {
+                        draft.status = Some(error);
+                    }
+                }
             }
             Message::PerformAction(device_id, action) => {
                 let Some(backend) = self.backend.clone() else {
@@ -244,6 +263,9 @@ impl cosmic::Application for CosmicConnect {
                     Ok(message) => message,
                     Err(error) => error,
                 });
+
+                return Task::perform(async {}, |_| Message::RefreshDevices)
+                    .map(cosmic::Action::App);
             }
         }
 
@@ -251,47 +273,81 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        self.core.applet.autosize_window(self.header_view()).into()
+        self.core
+            .applet
+            .icon_button("preferences-system-network-symbolic")
+            .on_press(Message::TogglePopup)
+            .into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
         let mut content: Vec<Element<Message>> = Vec::new();
 
-        content.push(
+        let status_text = if self.backend.is_some() {
+            "Online"
+        } else {
+            "Searching for KDE Connect…"
+        };
+
+        let local_badge = container(
+            row![
+                icon::from_name("computer-symbolic").size(14),
+                column![
+                    text::caption("Computer"),
+                    text::caption("Local device"),
+                ]
+                .spacing(2),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([6, 10]);
+
+        let remote_badge = if let Some(first_device) = self.devices.first() {
             container(
                 row![
-                    icon::from_name("phone-symbolic").size(20),
-                    text::title4("COSMIC Connect"),
+                    icon::from_name(first_device.device_type.icon_name()).size(14),
+                    column![
+                        text::caption(&first_device.name),
+                        text::caption(if first_device.is_reachable {
+                            "Connected"
+                        } else {
+                            "Offline"
+                        }),
+                    ]
+                    .spacing(2),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
             )
-            .padding([12, 16])
-            .into(),
-        );
-
-        content.push(divider::horizontal::default().into());
-
-        let status_text = if self.backend.is_some() {
-            "Backend connected"
+            .padding([6, 10])
         } else {
-            "Connecting to KDE Connect"
+            container(
+                row![
+                    icon::from_name("phone-symbolic").size(14),
+                    text::caption("No device paired"),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding([6, 10])
         };
 
         content.push(
             container(
-                row![
+                column![
+                    row![local_badge, remote_badge]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
                     text::caption(status_text),
-                    button::custom(text::caption("Refresh"))
-                        .on_press(Message::RefreshDevices)
-                        .padding([2, 8]),
                 ]
-                .spacing(12)
-                .align_y(Alignment::Center),
+                .spacing(8),
             )
-            .padding([8, 16, 4, 16])
+            .padding([10, 16])
             .into(),
         );
+
+        content.push(divider::horizontal::default().into());
 
         if let Some(err) = &self.error {
             content.push(
@@ -387,6 +443,39 @@ impl PollState {
     }
 }
 
+async fn read_clipboard_text() -> Result<String, String> {
+    let output = tokio::process::Command::new("wl-paste")
+        .arg("-n")
+        .output()
+        .await
+        .map_err(|e| format!("clipboard unavailable: {e}"))?;
+
+    if output.status.success() {
+        String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+async fn pick_file_path() -> Result<String, String> {
+    let response = SelectedFiles::open_file()
+        .title("Choose a file to send")
+        .accept_label("Send")
+        .modal(true)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .response()
+        .map_err(|e| e.to_string())?;
+
+    response
+        .uris()
+        .first()
+        .and_then(|uri| uri.to_file_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .ok_or_else(|| "No file selected".to_string())
+}
+
 fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Message> {
     let icon_name = device.device_type.icon_name();
     let status_text = if device.is_reachable {
@@ -424,14 +513,35 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
         )));
     }
 
+    let connection_badge = if device.is_reachable {
+        text::caption("● Connected")
+    } else if device.is_paired {
+        text::caption("● Offline")
+    } else {
+        text::caption("● Not paired")
+    };
+
     let header = row![
         icon::from_name(icon_name).size(24),
-        column![text::body(&device.name), info].spacing(2),
+        column![
+            text::body(&device.name),
+            row![connection_badge, text::caption(device.device_type.label())]
+                .spacing(8)
+                .align_y(Alignment::Center),
+        ]
+        .spacing(2),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
 
     let mut rows = vec![header.into()];
+
+    rows.push(
+        container(info)
+            .padding([2, 0, 0, 0])
+            .width(Length::Fill)
+            .into(),
+    );
 
     let mut quick_actions: Vec<Element<Message>> = Vec::new();
 
@@ -518,8 +628,7 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
 
     if !quick_actions.is_empty() {
         rows.push(
-            row::with_children(quick_actions)
-                .spacing(4)
+            container(row::with_children(quick_actions).spacing(6))
                 .padding([4, 0, 0, 0])
                 .into(),
         );
@@ -536,6 +645,9 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
                             move |value| Message::ClipboardTextChanged(device_id.clone(), value)
                         })
                         .width(Length::Fill),
+                    button::custom(text::caption("Use Clipboard"))
+                        .on_press(Message::ReadClipboard(device.id.clone()))
+                        .padding([2, 8]),
                     button::custom(text::caption("Push"))
                         .on_press(Message::PerformAction(
                             device.id.clone(),
@@ -592,6 +704,9 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
                             move |value| Message::FilePathChanged(device_id.clone(), value)
                         })
                         .width(Length::Fill),
+                    button::custom(text::caption("Choose"))
+                        .on_press(Message::ChooseFile(device.id.clone()))
+                        .padding([2, 8]),
                     button::custom(text::caption("Send File"))
                         .on_press_maybe((!draft.selected_file.trim().is_empty()).then(|| {
                                 Message::PerformAction(
@@ -610,8 +725,24 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
     }
 
     if let Some(status) = &draft.status {
+        let icon_name = if status == "Working..." {
+            "process-working-symbolic"
+        } else if status.contains("error") || status.contains("failed") {
+            "dialog-error-symbolic"
+        } else {
+            "emblem-default-symbolic"
+        };
+
+        let status_row = row![
+            icon::from_name(icon_name).size(12),
+            text::caption(status),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
         rows.push(
-            text::caption(status)
+            container(status_row)
+                .padding([6, 8])
                 .width(Length::Fill)
                 .into(),
         );

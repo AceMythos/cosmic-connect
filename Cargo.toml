@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ashpd = "0.10"
 futures-util = "0.3"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
