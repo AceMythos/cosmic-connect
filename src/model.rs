@@ -8,11 +8,18 @@ pub struct Device {
     pub pair_state: i32,
     pub battery: Option<BatteryInfo>,
     pub supported_plugins: Vec<String>,
+    pub loaded_plugins: Vec<String>,
 }
 
 impl Device {
     pub fn has_plugin(&self, name: &str) -> bool {
-        self.supported_plugins.iter().any(|p| p.as_str() == name)
+        let plugins = if self.loaded_plugins.is_empty() {
+            &self.supported_plugins
+        } else {
+            &self.loaded_plugins
+        };
+
+        plugins.iter().any(|p| p.as_str() == name)
     }
 }
 
@@ -68,8 +75,11 @@ pub enum ActionType {
     Ring,
     Ping,
     SendClipboard,
+    SendClipboardText(String),
+    ShareText(String),
     ShareUrl(String),
-    SendFile,
+    SendFile(String),
+    BrowseFiles,
     Pair,
     AcceptPairing,
     CancelPairing,

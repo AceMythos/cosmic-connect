@@ -6,6 +6,7 @@ const KDE_CONNECT_SERVICE: &str = "org.kde.kdeconnect";
 const DAEMON_PATH: &str = "/modules/kdeconnect";
 const DEVICE_IFACE: &str = "org.kde.kdeconnect.device";
 
+#[derive(Debug)]
 pub struct KdeConnectBackend {
     conn: Connection,
 }
@@ -78,6 +79,12 @@ impl KdeConnectBackend {
         proxy.get_property("supportedPlugins").await
     }
 
+    pub async fn loaded_plugins(&self, id: &str) -> Result<Vec<String>> {
+        let p = Self::device_path(id);
+        let proxy = Proxy::new(&self.conn, KDE_CONNECT_SERVICE, p.as_str(), DEVICE_IFACE).await?;
+        proxy.call("loadedPlugins", &()).await
+    }
+
     pub async fn battery_charge(&self, id: &str) -> Option<i32> {
         let p = Self::plugin_path(id, "battery");
         let proxy = Proxy::new(&self.conn, KDE_CONNECT_SERVICE, p.as_str(), "org.kde.kdeconnect.device.battery").await.ok()?;
@@ -114,12 +121,60 @@ impl KdeConnectBackend {
         ).await;
     }
 
-    pub async fn share_url(&self, id: &str, url: &str) {
+    pub async fn send_clipboard_text(&self, id: &str, content: &str) -> Result<()> {
+        let p = Self::plugin_path(id, "clipboard");
+        self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.clipboard"), "sendClipboard", &(content,),
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn share_url(&self, id: &str, url: &str) -> Result<()> {
         let p = Self::plugin_path(id, "share");
-        let _ = self.conn.call_method(
+        self.conn.call_method(
             Some(KDE_CONNECT_SERVICE), p.as_str(),
             Some("org.kde.kdeconnect.device.share"), "shareUrl", &(url,),
-        ).await;
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn share_text(&self, id: &str, text: &str) -> Result<()> {
+        let p = Self::plugin_path(id, "share");
+        self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.share"), "shareText", &(text,),
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn share_file(&self, id: &str, file: &str) -> Result<()> {
+        let p = Self::plugin_path(id, "share");
+        self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.share"), "openFile", &(file,),
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn browse_files(&self, id: &str) -> Result<()> {
+        let p = Self::plugin_path(id, "sftp");
+        let result = self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.sftp"), "startBrowsing", &(),
+        ).await?;
+        let started: bool = result.body().deserialize()?;
+
+        if started {
+            Ok(())
+        } else {
+            let error = self.conn.call_method(
+                Some(KDE_CONNECT_SERVICE), p.as_str(),
+                Some("org.kde.kdeconnect.device.sftp"), "getMountError", &(),
+            ).await?;
+            let message: String = error.body().deserialize()?;
+            Err(zbus::Error::Failure(message))
+        }
     }
 
     pub async fn request_pairing(&self, id: &str) {
@@ -180,8 +235,9 @@ impl KdeConnectBackend {
         let is_paired = self.is_paired(id).await.unwrap_or(false);
         let pair_state = self.pair_state(id).await.unwrap_or(0);
         let supported_plugins = self.supported_plugins(id).await.unwrap_or_default();
+        let loaded_plugins = self.loaded_plugins(id).await.unwrap_or_default();
 
-        let battery = if is_reachable && supported_plugins.iter().any(|p| p == "kdeconnect_battery") {
+        let battery = if is_reachable && loaded_plugins.iter().any(|p| p == "kdeconnect_battery") {
             let charge = self.battery_charge(id).await;
             let is_charging = self.battery_charging(id).await;
             charge.map(|c| BatteryInfo {
@@ -201,22 +257,60 @@ impl KdeConnectBackend {
             pair_state,
             battery,
             supported_plugins,
+            loaded_plugins,
         }
     }
 
-    pub async fn perform_action(&self, device_id: &str, action: &ActionType) {
+    pub async fn perform_action(&self, device_id: &str, action: &ActionType) -> Result<String> {
         match action {
-            ActionType::Ring => self.ring_device(device_id).await,
-            ActionType::Ping => self.send_ping(device_id).await,
-            ActionType::SendClipboard => self.send_clipboard(device_id).await,
-            ActionType::ShareUrl(url) => self.share_url(device_id, url).await,
-            ActionType::SendFile => {
-                log::info!("SendFile not yet implemented");
+            ActionType::Ring => {
+                self.ring_device(device_id).await;
+                Ok("Ring request sent".into())
             }
-            ActionType::Pair => self.request_pairing(device_id).await,
-            ActionType::AcceptPairing => self.accept_pairing(device_id).await,
-            ActionType::CancelPairing => self.cancel_pairing(device_id).await,
-            ActionType::Unpair => self.unpair(device_id).await,
+            ActionType::Ping => {
+                self.send_ping(device_id).await;
+                Ok("Ping sent".into())
+            }
+            ActionType::SendClipboard => {
+                self.send_clipboard(device_id).await;
+                Ok("Clipboard sent".into())
+            }
+            ActionType::SendClipboardText(content) => {
+                self.send_clipboard_text(device_id, content).await?;
+                Ok("Clipboard text sent".into())
+            }
+            ActionType::ShareText(text) => {
+                self.share_text(device_id, text).await?;
+                Ok("Text shared".into())
+            }
+            ActionType::ShareUrl(url) => {
+                self.share_url(device_id, url).await?;
+                Ok("URL shared".into())
+            }
+            ActionType::SendFile(file) => {
+                self.share_file(device_id, file).await?;
+                Ok("File shared".into())
+            }
+            ActionType::BrowseFiles => {
+                self.browse_files(device_id).await?;
+                Ok("Opened device files".into())
+            }
+            ActionType::Pair => {
+                self.request_pairing(device_id).await;
+                Ok("Pairing requested".into())
+            }
+            ActionType::AcceptPairing => {
+                self.accept_pairing(device_id).await;
+                Ok("Pairing accepted".into())
+            }
+            ActionType::CancelPairing => {
+                self.cancel_pairing(device_id).await;
+                Ok("Pairing canceled".into())
+            }
+            ActionType::Unpair => {
+                self.unpair(device_id).await;
+                Ok("Device unpaired".into())
+            }
         }
     }
 }

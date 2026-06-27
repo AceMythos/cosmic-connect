@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,7 +7,10 @@ use cosmic::iced::core::Alignment;
 use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::window::Id;
 use cosmic::iced::{Length, Limits, Subscription};
-use cosmic::widget::{button, column, container, divider, icon, progress_bar, row, text};
+use cosmic::widget::text_input;
+use cosmic::widget::{
+    button, column, container, divider, icon, progress_bar, row, scrollable, text,
+};
 use cosmic::{Action, Element, Task};
 use futures_util::stream::unfold;
 
@@ -17,10 +21,20 @@ const ID: &str = "io.github.acemythos.Connect";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
+struct DeviceDraft {
+    clipboard_text: String,
+    share_text: String,
+    share_url: String,
+    selected_file: String,
+    status: Option<String>,
+}
+
+#[derive(Default)]
 pub struct CosmicConnect {
     core: Core,
     popup: Option<Id>,
     devices: Vec<Device>,
+    drafts: HashMap<String, DeviceDraft>,
     error: Option<String>,
     backend: Option<Arc<KdeConnectBackend>>,
 }
@@ -29,14 +43,43 @@ pub struct CosmicConnect {
 pub enum Message {
     TogglePopup,
     PopupClosed(Id),
+    BackendReady(Arc<KdeConnectBackend>),
     DevicesUpdated(Vec<Device>),
     BackendError(String),
     PerformAction(String, ActionType),
+    ActionFinished(String, Result<String, String>),
+    ClipboardTextChanged(String, String),
+    ShareTextChanged(String, String),
+    ShareUrlChanged(String, String),
+    FilePathChanged(String, String),
 }
 
 impl CosmicConnect {
     fn connected_count(&self) -> usize {
         self.devices.iter().filter(|d| d.is_reachable).count()
+    }
+
+    fn pair_state_label(pair_state: i32, is_paired: bool) -> &'static str {
+        match pair_state {
+            1 => "Pairing requested",
+            2 => "Waiting for confirmation",
+            3 => "Paired",
+            _ if is_paired => "Paired",
+            _ => "Not paired",
+        }
+    }
+
+    fn draft_mut(&mut self, device_id: &str) -> &mut DeviceDraft {
+        self.drafts.entry(device_id.to_string()).or_default()
+    }
+
+    fn sync_drafts(&mut self) {
+        self.drafts
+            .retain(|device_id, _| self.devices.iter().any(|device| &device.id == device_id));
+
+        for device in &self.devices {
+            self.drafts.entry(device.id.clone()).or_default();
+        }
     }
 
     fn header_view(&self) -> Element<'_, Message> {
@@ -53,7 +96,7 @@ impl CosmicConnect {
         let content: Element<'_, Message> = if connected > 0 {
             row![
                 icon::from_name(icon_name).size(14),
-                text::body(format!("{}", connected)),
+                text::body(format!("{connected}")),
             ]
             .spacing(4)
             .align_y(Alignment::Center)
@@ -84,7 +127,25 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
-        (Self { core, ..Default::default() }, Task::none())
+        (
+            Self {
+                core,
+                ..Default::default()
+            },
+            Task::perform(
+                async {
+                    KdeConnectBackend::new()
+                        .await
+                        .map(Arc::new)
+                        .map_err(|e| format!("D-Bus: {e}"))
+                },
+                |result| match result {
+                    Ok(backend) => Message::BackendReady(backend),
+                    Err(error) => Message::BackendError(error),
+                },
+            )
+            .map(cosmic::Action::App),
+        )
     }
 
     fn on_close_requested(&self, id: cosmic::iced::window::Id) -> Option<Message> {
@@ -107,10 +168,10 @@ impl cosmic::Application for CosmicConnect {
                         None,
                     );
                     popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(420.0)
-                        .min_width(280.0)
-                        .min_height(100.0)
-                        .max_height(600.0);
+                        .max_width(460.0)
+                        .min_width(320.0)
+                        .min_height(140.0)
+                        .max_height(720.0);
                     get_popup(popup_settings)
                 };
             }
@@ -119,22 +180,58 @@ impl cosmic::Application for CosmicConnect {
                     self.popup = None;
                 }
             }
-            Message::DevicesUpdated(devices) => {
-                self.devices = devices;
+            Message::BackendReady(backend) => {
+                self.backend = Some(backend);
                 self.error = None;
             }
-            Message::BackendError(e) => {
-                self.error = Some(e);
+            Message::DevicesUpdated(devices) => {
+                self.devices = devices;
+                self.sync_drafts();
+                self.error = None;
+            }
+            Message::BackendError(error) => {
+                self.error = Some(error);
+            }
+            Message::ClipboardTextChanged(device_id, value) => {
+                self.draft_mut(&device_id).clipboard_text = value;
+            }
+            Message::ShareTextChanged(device_id, value) => {
+                self.draft_mut(&device_id).share_text = value;
+            }
+            Message::ShareUrlChanged(device_id, value) => {
+                self.draft_mut(&device_id).share_url = value;
+            }
+            Message::FilePathChanged(device_id, value) => {
+                self.draft_mut(&device_id).selected_file = value;
             }
             Message::PerformAction(device_id, action) => {
-                if let Some(backend) = &self.backend {
-                    let backend = backend.clone();
-                    tokio::spawn(async move {
-                        backend.perform_action(&device_id, &action).await;
-                    });
-                }
+                let Some(backend) = self.backend.clone() else {
+                    self.draft_mut(&device_id).status = Some("KDE Connect backend unavailable".into());
+                    return Task::none();
+                };
+
+                self.draft_mut(&device_id).status = Some("Working...".into());
+
+                return Task::perform(
+                    async move {
+                        backend
+                            .perform_action(&device_id, &action)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| Message::ActionFinished(device_id.clone(), result),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::ActionFinished(device_id, result) => {
+                let draft = self.draft_mut(&device_id);
+                draft.status = Some(match result {
+                    Ok(message) => message,
+                    Err(error) => error,
+                });
             }
         }
+
         Task::none()
     }
 
@@ -192,40 +289,41 @@ impl cosmic::Application for CosmicConnect {
                 .into(),
             );
         } else {
-            for (i, device) in self.devices.iter().enumerate() {
-                if i > 0 {
+            for (index, device) in self.devices.iter().enumerate() {
+                if index > 0 {
                     content.push(divider::horizontal::default().into());
                 }
-                content.push(device_row(device).into());
+
+                let empty_draft = DeviceDraft::default();
+                let draft = self.drafts.get(&device.id).unwrap_or(&empty_draft);
+                content.push(device_row(device, draft).into());
             }
         }
 
         content.push(divider::horizontal::default().into());
         content.push(
-            container(
-                text::caption(format!("{} device(s)", self.devices.len())),
-            )
-            .padding([6, 16])
-            .into(),
+            container(text::caption(format!("{} device(s)", self.devices.len())))
+                .padding([6, 16])
+                .into(),
         );
 
-        self.core.applet.popup_container(column::with_children(content)).into()
+        self.core
+            .applet
+            .popup_container(scrollable(column::with_children(content)).height(Length::Shrink))
+            .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with(
-            std::any::TypeId::of::<()>(),
-            |_state| {
-                unfold(PollState::new(), |mut state| async {
-                    tokio::time::sleep(POLL_INTERVAL).await;
-                    let msg = match state.poll().await {
-                        Ok(devices) => Message::DevicesUpdated(devices),
-                        Err(e) => Message::BackendError(e),
-                    };
-                    Some((msg, state))
-                })
-            },
-        )
+        Subscription::run_with(std::any::TypeId::of::<()>(), |_state| {
+            unfold(PollState::new(), |mut state| async {
+                tokio::time::sleep(POLL_INTERVAL).await;
+                let msg = match state.poll().await {
+                    Ok(devices) => Message::DevicesUpdated(devices),
+                    Err(e) => Message::BackendError(e),
+                };
+                Some((msg, state))
+            })
+        })
     }
 }
 
@@ -241,18 +339,18 @@ impl PollState {
     async fn poll(&mut self) -> Result<Vec<Device>, String> {
         if self.backend.is_none() {
             match KdeConnectBackend::new().await {
-                Ok(b) => self.backend = Some(b),
-                Err(e) => return Err(format!("D-Bus: {e}")),
+                Ok(backend) => self.backend = Some(backend),
+                Err(error) => return Err(format!("D-Bus: {error}")),
             }
         }
+
         let backend = self.backend.as_ref().unwrap();
         Ok(backend.devices().await)
     }
 }
 
-fn device_row(device: &Device) -> Element<'_, Message> {
+fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Message> {
     let icon_name = device.device_type.icon_name();
-
     let status_text = if device.is_reachable {
         "Connected"
     } else if device.is_paired {
@@ -260,6 +358,7 @@ fn device_row(device: &Device) -> Element<'_, Message> {
     } else {
         "Not paired"
     };
+    let pair_text = CosmicConnect::pair_state_label(device.pair_state, device.is_paired);
 
     let mut info = row![
         icon::from_name(if device.is_reachable {
@@ -269,93 +368,219 @@ fn device_row(device: &Device) -> Element<'_, Message> {
         })
         .size(10),
         text::caption(status_text),
+        text::caption(pair_text),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
 
-    if let Some(b) = &device.battery {
+    if let Some(battery) = &device.battery {
         info = info.push(
-            progress_bar::determinate_linear(b.charge as f32 / 100.0)
+            progress_bar::determinate_linear(battery.charge as f32 / 100.0)
                 .width(Length::Fixed(60.0))
                 .girth(6),
         );
-        let label = if b.is_charging {
-            format!("{}%", b.charge)
-        } else {
-            format!("{}%", b.charge)
-        };
-        info = info.push(text::caption(label));
+        info = info.push(text::caption(format!(
+            "{}%{}",
+            battery.charge,
+            if battery.is_charging { " charging" } else { "" }
+        )));
     }
 
     let header = row![
         icon::from_name(icon_name).size(24),
-        column![
-            text::body(&device.name),
-            info,
-        ]
-        .spacing(2),
+        column![text::body(&device.name), info].spacing(2),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
 
     let mut rows = vec![header.into()];
 
-    if device.is_reachable {
-        let mut btns: Vec<Element<Message>> = Vec::new();
-        if device.has_plugin("kdeconnect_ping") {
-            btns.push(
-                button::custom(text::caption("Ping"))
-                    .on_press(Message::PerformAction(
-                        device.id.clone(),
-                        ActionType::Ping,
-                    ))
-                    .padding([2, 8])
-                    .into(),
-            );
-        }
-        if device.has_plugin("kdeconnect_findmyphone") {
-            btns.push(
-                button::custom(text::caption("Ring"))
-                    .on_press(Message::PerformAction(
-                        device.id.clone(),
-                        ActionType::Ring,
-                    ))
-                    .padding([2, 8])
-                    .into(),
-            );
-        }
-        if device.has_plugin("kdeconnect_clipboard") {
-            btns.push(
-                button::custom(text::caption("Clipboard"))
-                    .on_press(Message::PerformAction(
-                        device.id.clone(),
-                        ActionType::SendClipboard,
-                    ))
-                    .padding([2, 8])
-                    .into(),
-            );
-        }
-        if !btns.is_empty() {
-            rows.push(
-                row::with_children(btns)
-                    .spacing(4)
-                    .padding([4, 0, 0, 0])
-                    .into(),
-            );
-        }
-    } else if !device.is_paired {
-        rows.push(
-            button::custom(text::caption("Pair"))
+    let mut quick_actions: Vec<Element<Message>> = Vec::new();
+
+    if device.is_reachable && device.has_plugin("kdeconnect_ping") {
+        quick_actions.push(
+            button::custom(text::caption("Ping"))
+                .on_press(Message::PerformAction(device.id.clone(), ActionType::Ping))
+                .padding([2, 8])
+                .into(),
+        );
+    }
+
+    if device.is_reachable && device.has_plugin("kdeconnect_findmyphone") {
+        quick_actions.push(
+            button::custom(text::caption("Ring"))
+                .on_press(Message::PerformAction(device.id.clone(), ActionType::Ring))
+                .padding([2, 8])
+                .into(),
+        );
+    }
+
+    if device.is_reachable && device.has_plugin("kdeconnect_sftp") {
+        quick_actions.push(
+            button::custom(text::caption("Browse Files"))
                 .on_press(Message::PerformAction(
                     device.id.clone(),
-                    ActionType::Pair,
+                    ActionType::BrowseFiles,
                 ))
                 .padding([2, 8])
                 .into(),
         );
     }
 
+    match device.pair_state {
+        0 => {
+            quick_actions.push(
+                button::custom(text::caption("Pair"))
+                    .on_press(Message::PerformAction(device.id.clone(), ActionType::Pair))
+                    .padding([2, 8])
+                    .into(),
+            );
+        }
+        1 => {
+            quick_actions.push(
+                button::custom(text::caption("Cancel Pairing"))
+                    .on_press(Message::PerformAction(
+                        device.id.clone(),
+                        ActionType::CancelPairing,
+                    ))
+                    .padding([2, 8])
+                    .into(),
+            );
+        }
+        2 => {
+            quick_actions.push(
+                button::custom(text::caption("Accept Pairing"))
+                    .on_press(Message::PerformAction(
+                        device.id.clone(),
+                        ActionType::AcceptPairing,
+                    ))
+                    .padding([2, 8])
+                    .into(),
+            );
+            quick_actions.push(
+                button::custom(text::caption("Cancel Pairing"))
+                    .on_press(Message::PerformAction(
+                        device.id.clone(),
+                        ActionType::CancelPairing,
+                    ))
+                    .padding([2, 8])
+                    .into(),
+            );
+        }
+        3 => {
+            quick_actions.push(
+                button::custom(text::caption("Unpair"))
+                    .on_press(Message::PerformAction(device.id.clone(), ActionType::Unpair))
+                    .padding([2, 8])
+                    .into(),
+            );
+        }
+        _ => {}
+    }
+
+    if !quick_actions.is_empty() {
+        rows.push(
+            row::with_children(quick_actions)
+                .spacing(4)
+                .padding([4, 0, 0, 0])
+                .into(),
+        );
+    }
+
+    if device.is_reachable && device.has_plugin("kdeconnect_clipboard") {
+        rows.push(
+            column![
+                text::caption("Clipboard"),
+                row![
+                    text_input::text_input("Send text to device clipboard", &draft.clipboard_text)
+                        .on_input({
+                            let device_id = device.id.clone();
+                            move |value| Message::ClipboardTextChanged(device_id.clone(), value)
+                        })
+                        .width(Length::Fill),
+                    button::custom(text::caption("Push"))
+                        .on_press(Message::PerformAction(
+                            device.id.clone(),
+                            ActionType::SendClipboardText(draft.clipboard_text.clone()),
+                        ))
+                        .padding([2, 8]),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4)
+            .padding([6, 0, 0, 0])
+            .into(),
+        );
+    }
+
+    if device.is_reachable && device.has_plugin("kdeconnect_share") {
+        rows.push(
+            column![
+                text::caption("Share"),
+                row![
+                    text_input::text_input("Share URL", &draft.share_url)
+                        .on_input({
+                            let device_id = device.id.clone();
+                            move |value| Message::ShareUrlChanged(device_id.clone(), value)
+                        })
+                        .width(Length::Fill),
+                    button::custom(text::caption("Send URL"))
+                        .on_press(Message::PerformAction(
+                            device.id.clone(),
+                            ActionType::ShareUrl(draft.share_url.clone()),
+                        ))
+                        .padding([2, 8]),
+                ]
+                .spacing(6),
+                row![
+                    text_input::text_input("Share text", &draft.share_text)
+                        .on_input({
+                            let device_id = device.id.clone();
+                            move |value| Message::ShareTextChanged(device_id.clone(), value)
+                        })
+                        .width(Length::Fill),
+                    button::custom(text::caption("Send Text"))
+                        .on_press(Message::PerformAction(
+                            device.id.clone(),
+                            ActionType::ShareText(draft.share_text.clone()),
+                        ))
+                        .padding([2, 8]),
+                ]
+                .spacing(6),
+                row![
+                    text_input::text_input("Path to local file", &draft.selected_file)
+                        .on_input({
+                            let device_id = device.id.clone();
+                            move |value| Message::FilePathChanged(device_id.clone(), value)
+                        })
+                        .width(Length::Fill),
+                    button::custom(text::caption("Send File"))
+                        .on_press_maybe((!draft.selected_file.trim().is_empty()).then(|| {
+                                Message::PerformAction(
+                                    device.id.clone(),
+                                    ActionType::SendFile(draft.selected_file.clone()),
+                                )
+                            }))
+                        .padding([2, 8]),
+                ]
+                .spacing(6),
+            ]
+            .spacing(6)
+            .padding([8, 0, 0, 0])
+            .into(),
+        );
+    }
+
+    if let Some(status) = &draft.status {
+        rows.push(
+            text::caption(status)
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+
     container(column::with_children(rows).spacing(4))
         .padding([8, 16])
+        .width(Length::Fill)
         .into()
 }
