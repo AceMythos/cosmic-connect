@@ -75,6 +75,10 @@ impl CosmicConnect {
         self.drafts.entry(device_id.to_string()).or_default()
     }
 
+    fn popup_parent_id(&self) -> Option<Id> {
+        self.core.main_window_id()
+    }
+
     fn sync_drafts(&mut self) {
         self.drafts
             .retain(|device_id, _| self.devices.iter().any(|device| &device.id == device_id));
@@ -132,10 +136,15 @@ impl cosmic::Application for CosmicConnect {
                 return if let Some(popup_id) = self.popup.take() {
                     destroy_popup(popup_id)
                 } else {
+                    let Some(parent_id) = self.popup_parent_id() else {
+                        self.error = Some("Applet window not ready yet. Please try again.".into());
+                        return Task::none();
+                    };
+
                     let new_id = Id::unique();
                     self.popup.replace(new_id);
                     let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
+                        parent_id,
                         new_id,
                         None,
                         None,
@@ -333,10 +342,14 @@ impl cosmic::Application for CosmicConnect {
             .padding([6, 10])
         };
 
+        let refresh_button = button::custom(text::caption("Refresh"))
+            .on_press(Message::RefreshDevices)
+            .padding([6, 10]);
+
         content.push(
             container(
                 column![
-                    row![local_badge, remote_badge]
+                    row![local_badge, remote_badge, refresh_button]
                         .spacing(10)
                         .align_y(Alignment::Center),
                     text::caption(status_text),
@@ -381,25 +394,48 @@ impl cosmic::Application for CosmicConnect {
                 .into(),
             );
         } else {
-            for (index, device) in self.devices.iter().enumerate() {
-                if index > 0 {
+            let paired_devices: Vec<&Device> = self.devices.iter().filter(|device| device.is_paired).collect();
+            let available_devices: Vec<&Device> = self.devices.iter().filter(|device| !device.is_paired).collect();
+
+            if !paired_devices.is_empty() {
+                content.push(
+                    container(text::caption("Paired devices"))
+                        .padding([10, 16, 4, 16])
+                        .into(),
+                );
+                for (index, device) in paired_devices.iter().enumerate() {
+                    if index > 0 {
+                        content.push(divider::horizontal::default().into());
+                    }
+                    let draft = self
+                        .drafts
+                        .get(&device.id)
+                        .expect("draft state should exist for each device");
+                    content.push(device_row(device, draft).into());
+                }
+            }
+
+            if !available_devices.is_empty() {
+                if !paired_devices.is_empty() {
                     content.push(divider::horizontal::default().into());
                 }
-
-                let draft = self
-                    .drafts
-                    .get(&device.id)
-                    .expect("draft state should exist for each device");
-                content.push(device_row(device, draft).into());
+                content.push(
+                    container(text::caption("Available devices"))
+                        .padding([10, 16, 4, 16])
+                        .into(),
+                );
+                for (index, device) in available_devices.iter().enumerate() {
+                    if index > 0 {
+                        content.push(divider::horizontal::default().into());
+                    }
+                    let draft = self
+                        .drafts
+                        .get(&device.id)
+                        .expect("draft state should exist for each device");
+                    content.push(device_row(device, draft).into());
+                }
             }
         }
-
-        content.push(divider::horizontal::default().into());
-        content.push(
-            container(text::caption(format!("{} device(s)", self.devices.len())))
-                .padding([6, 16])
-                .into(),
-        );
 
         self.core
             .applet
@@ -543,92 +579,83 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
             .into(),
     );
 
+    fn action_button<'a>(icon_name: &'a str, label: &'a str, message: Message) -> Element<'a, Message> {
+        button::custom(
+            row![icon::from_name(icon_name).size(14), text::caption(label)]
+                .spacing(6)
+                .align_y(Alignment::Center),
+        )
+        .on_press(message)
+        .padding([6, 10])
+        .into()
+    }
+
     let mut quick_actions: Vec<Element<Message>> = Vec::new();
 
     if device.is_reachable && device.has_plugin("kdeconnect_ping") {
-        quick_actions.push(
-            button::custom(text::caption("Ping"))
-                .on_press(Message::PerformAction(device.id.clone(), ActionType::Ping))
-                .padding([2, 8])
-                .into(),
-        );
+        quick_actions.push(action_button(
+            "network-transmit-receive-symbolic",
+            "Ping",
+            Message::PerformAction(device.id.clone(), ActionType::Ping),
+        ));
     }
 
     if device.is_reachable && device.has_plugin("kdeconnect_findmyphone") {
-        quick_actions.push(
-            button::custom(text::caption("Ring"))
-                .on_press(Message::PerformAction(device.id.clone(), ActionType::Ring))
-                .padding([2, 8])
-                .into(),
-        );
+        quick_actions.push(action_button(
+            "bell-symbolic",
+            "Ring",
+            Message::PerformAction(device.id.clone(), ActionType::Ring),
+        ));
     }
 
     if device.is_reachable && device.has_plugin("kdeconnect_sftp") {
-        quick_actions.push(
-            button::custom(text::caption("Browse Files"))
-                .on_press(Message::PerformAction(
-                    device.id.clone(),
-                    ActionType::BrowseFiles,
-                ))
-                .padding([2, 8])
-                .into(),
-        );
+        quick_actions.push(action_button(
+            "folder-symbolic",
+            "Files",
+            Message::PerformAction(device.id.clone(), ActionType::BrowseFiles),
+        ));
     }
 
     match device.pair_state {
         0 => {
-            quick_actions.push(
-                button::custom(text::caption("Pair"))
-                    .on_press(Message::PerformAction(device.id.clone(), ActionType::Pair))
-                    .padding([2, 8])
-                    .into(),
-            );
+            quick_actions.push(action_button(
+                "emblem-new-symbolic",
+                "Pair",
+                Message::PerformAction(device.id.clone(), ActionType::Pair),
+            ));
         }
         1 => {
-            quick_actions.push(
-                button::custom(text::caption("Cancel Pairing"))
-                    .on_press(Message::PerformAction(
-                        device.id.clone(),
-                        ActionType::CancelPairing,
-                    ))
-                    .padding([2, 8])
-                    .into(),
-            );
+            quick_actions.push(action_button(
+                "dialog-cancel-symbolic",
+                "Cancel",
+                Message::PerformAction(device.id.clone(), ActionType::CancelPairing),
+            ));
         }
         2 => {
-            quick_actions.push(
-                button::custom(text::caption("Accept Pairing"))
-                    .on_press(Message::PerformAction(
-                        device.id.clone(),
-                        ActionType::AcceptPairing,
-                    ))
-                    .padding([2, 8])
-                    .into(),
-            );
-            quick_actions.push(
-                button::custom(text::caption("Cancel Pairing"))
-                    .on_press(Message::PerformAction(
-                        device.id.clone(),
-                        ActionType::CancelPairing,
-                    ))
-                    .padding([2, 8])
-                    .into(),
-            );
+            quick_actions.push(action_button(
+                "dialog-ok-symbolic",
+                "Accept",
+                Message::PerformAction(device.id.clone(), ActionType::AcceptPairing),
+            ));
+            quick_actions.push(action_button(
+                "dialog-cancel-symbolic",
+                "Cancel",
+                Message::PerformAction(device.id.clone(), ActionType::CancelPairing),
+            ));
         }
         3 => {
-            quick_actions.push(
-                button::custom(text::caption("Unpair"))
-                    .on_press(Message::PerformAction(device.id.clone(), ActionType::Unpair))
-                    .padding([2, 8])
-                    .into(),
-            );
+            quick_actions.push(action_button(
+                "user-trash-symbolic",
+                "Unpair",
+                Message::PerformAction(device.id.clone(), ActionType::Unpair),
+            ));
         }
         _ => {}
     }
 
     if !quick_actions.is_empty() {
         rows.push(
-            container(row::with_children(quick_actions).spacing(6))
+            container(row::with_children(quick_actions).spacing(8))
                 .padding([4, 0, 0, 0])
                 .into(),
         );
@@ -752,4 +779,15 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
         .padding([8, 16])
         .width(Length::Fill)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CosmicConnect;
+
+    #[test]
+    fn popup_parent_id_is_none_before_window_is_ready() {
+        let app = CosmicConnect::default();
+        assert!(app.popup_parent_id().is_none());
+    }
 }

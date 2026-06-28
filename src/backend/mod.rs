@@ -29,7 +29,7 @@ impl KdeConnectBackend {
                 DAEMON_PATH,
                 Some("org.kde.kdeconnect.daemon"),
                 "devices",
-                &(false, true),
+                &(false, false),
             )
             .await?;
         result.body().deserialize()
