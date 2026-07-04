@@ -1,5 +1,7 @@
 use cosmic_connect::app::CosmicConnect;
 
 fn main() -> cosmic::iced::Result {
-    cosmic::applet::run::<CosmicConnect>(())
+    cosmic::applet::run::<CosmicConnect>(())?;
+
+    Ok(())
 }

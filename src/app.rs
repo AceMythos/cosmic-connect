@@ -284,7 +284,7 @@ impl cosmic::Application for CosmicConnect {
     fn view(&self) -> Element<'_, Self::Message> {
         self.core
             .applet
-            .icon_button("preferences-system-network-symbolic")
+            .icon_button("smartphone-symbolic")
             .on_press(Message::TogglePopup)
             .into()
     }

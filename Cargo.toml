@@ -2,6 +2,7 @@
 name = "cosmic-connect"
 version = "0.1.0"
 edition = "2021"
+default-run = "cosmic-connect"
 
 [dependencies]
 ashpd = "0.10"
