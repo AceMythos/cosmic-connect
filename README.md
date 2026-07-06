@@ -52,12 +52,9 @@ Outputs device list. Useful for checking if KDE Connect is reachable over D-Bus.
 
 ## Known issues
 
-- Compile errors in `app.rs` are blocking (device_id clone/borrow issues in async blocks)
 - File chooser requires libcosmic built with `cosmic::dialog` feature
 - Wayland-only (uses wl-paste)
 - No SMS/conversation UI yet
-
-See `WORK_SUMMARY.md` for development notes.
 
 ## Contributing
 
