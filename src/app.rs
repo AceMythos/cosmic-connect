@@ -79,6 +79,21 @@ impl CosmicConnect {
         self.core.main_window_id()
     }
 
+    fn panel_preview(&self) -> String {
+        if self.backend.is_none() {
+            return "Connecting…".into();
+        }
+        if let Some(device) = self.devices.iter().find(|d| d.is_reachable) {
+            format!("{} - Connected", device.name)
+        } else if let Some(device) = self.devices.iter().find(|d| d.is_paired) {
+            format!("{} - Offline", device.name)
+        } else if !self.devices.is_empty() {
+            format!("{} - Not paired", self.devices[0].name)
+        } else {
+            "No devices".into()
+        }
+    }
+
     fn sync_drafts(&mut self) {
         self.drafts
             .retain(|device_id, _| self.devices.iter().any(|device| &device.id == device_id));
@@ -282,11 +297,22 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        self.core
+        let suggested = self.core.applet.suggested_size(false);
+        let icon = icon::from_name("phone-symbolic")
+            .size(suggested.1.saturating_sub(4));
+
+        let preview = text::caption(self.panel_preview()).size(12);
+        let content = row![icon, preview]
+            .spacing(6)
+            .align_y(Alignment::Center);
+
+        let btn = self.core
             .applet
-            .icon_button("smartphone-symbolic")
-            .on_press(Message::TogglePopup)
-            .into()
+            .button_from_element(content, true)
+            .width(Length::Shrink)
+            .on_press(Message::TogglePopup);
+
+        self.core.applet.autosize_window(btn).into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
