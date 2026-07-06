@@ -157,7 +157,7 @@ impl KdeConnectBackend {
         Ok(())
     }
 
-    pub async fn browse_files(&self, id: &str) -> Result<()> {
+    pub async fn browse_files(&self, id: &str) -> Result<String> {
         let p = Self::plugin_path(id, "sftp");
         let result = self.conn.call_method(
             Some(KDE_CONNECT_SERVICE), p.as_str(),
@@ -165,16 +165,33 @@ impl KdeConnectBackend {
         ).await?;
         let started: bool = result.body().deserialize()?;
 
-        if started {
-            Ok(())
-        } else {
+        if !started {
             let error = self.conn.call_method(
                 Some(KDE_CONNECT_SERVICE), p.as_str(),
                 Some("org.kde.kdeconnect.device.sftp"), "getMountError", &(),
             ).await?;
             let message: String = error.body().deserialize()?;
-            Err(zbus::Error::Failure(message))
+            return Err(zbus::Error::Failure(message));
         }
+
+        let mount_path: String = self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.sftp"), "mountPoint", &(),
+        ).await?.body().deserialize()?;
+
+        let storage_path = format!("{}/storage/emulated/0", mount_path);
+
+        let open_path = if tokio::fs::metadata(&storage_path).await.is_ok() {
+            storage_path
+        } else {
+            mount_path.clone()
+        };
+
+        let _ = tokio::process::Command::new("xdg-open")
+            .arg(&open_path)
+            .spawn();
+
+        Ok(format!("Opened {}", open_path))
     }
 
     pub async fn request_pairing(&self, id: &str) {
@@ -309,8 +326,7 @@ impl KdeConnectBackend {
                 Ok("File shared".into())
             }
             ActionType::BrowseFiles => {
-                self.browse_files(device_id).await?;
-                Ok("Opened device files".into())
+                self.browse_files(device_id).await
             }
             ActionType::Pair => {
                 self.request_pairing(device_id).await;
