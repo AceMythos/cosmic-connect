@@ -159,19 +159,18 @@ impl KdeConnectBackend {
 
     pub async fn browse_files(&self, id: &str) -> Result<String> {
         let p = Self::plugin_path(id, "sftp");
-        let result = self.conn.call_method(
-            Some(KDE_CONNECT_SERVICE), p.as_str(),
-            Some("org.kde.kdeconnect.device.sftp"), "startBrowsing", &(),
-        ).await?;
-        let started: bool = result.body().deserialize()?;
 
-        if !started {
-            let error = self.conn.call_method(
+        let mounted: bool = self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.sftp"), "mountAndWait", &(),
+        ).await?.body().deserialize()?;
+
+        if !mounted {
+            let error: String = self.conn.call_method(
                 Some(KDE_CONNECT_SERVICE), p.as_str(),
                 Some("org.kde.kdeconnect.device.sftp"), "getMountError", &(),
-            ).await?;
-            let message: String = error.body().deserialize()?;
-            return Err(zbus::Error::Failure(message));
+            ).await?.body().deserialize()?;
+            return Err(zbus::Error::Failure(error));
         }
 
         let mount_path: String = self.conn.call_method(
