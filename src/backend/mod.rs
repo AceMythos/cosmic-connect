@@ -209,6 +209,23 @@ impl KdeConnectBackend {
         ).await;
     }
 
+    pub async fn pairing_request_ids(&self) -> Vec<String> {
+        match Proxy::new(
+            &self.conn, KDE_CONNECT_SERVICE, DAEMON_PATH,
+            "org.kde.kdeconnect.daemon",
+        ).await {
+            Ok(p) => p.get_property("pairingRequests").await.unwrap_or_default(),
+            Err(_) => vec![],
+        }
+    }
+
+    pub async fn force_discovery(&self) {
+        let _ = self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), DAEMON_PATH,
+            Some("org.kde.kdeconnect.daemon"), "forceOnNetworkChange", &(),
+        ).await;
+    }
+
     pub async fn devices(&self) -> Vec<Device> {
         let ids = match self.device_ids().await {
             Ok(ids) => ids,

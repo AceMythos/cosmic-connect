@@ -16,7 +16,7 @@ use cosmic::{Action, Element, Task};
 use futures_util::stream::unfold;
 
 use crate::backend::KdeConnectBackend;
-use crate::model::{ActionType, Device};
+use crate::model::{ActionType, Device, DeviceType};
 
 const ID: &str = "io.github.acemythos.Connect";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -38,6 +38,7 @@ pub struct CosmicConnect {
     drafts: HashMap<String, DeviceDraft>,
     error: Option<String>,
     backend: Option<Arc<KdeConnectBackend>>,
+    is_discovering: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -46,7 +47,7 @@ pub enum Message {
     RefreshDevices,
     PopupClosed(Id),
     BackendReady(Arc<KdeConnectBackend>),
-    DevicesUpdated(Vec<Device>),
+    DevicesUpdated(Vec<Device>, Vec<String>),
     BackendError(String),
     PerformAction(String, ActionType),
     ActionFinished(String, Result<String, String>),
@@ -58,6 +59,7 @@ pub enum Message {
     FileChooserFinished(String, Result<String, String>),
     ReadClipboard(String),
     ClipboardReadFinished(String, Result<String, String>),
+    DiscoverDevices,
 }
 
 impl CosmicConnect {
@@ -166,10 +168,10 @@ impl cosmic::Application for CosmicConnect {
                         None,
                     );
                     popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(460.0)
-                        .min_width(320.0)
-                        .min_height(140.0)
-                        .max_height(720.0);
+                        .min_width(500.0)
+                        .max_width(500.0)
+                        .min_height(240.0)
+                        .max_height(760.0);
                     get_popup(popup_settings)
                 };
             }
@@ -178,10 +180,16 @@ impl cosmic::Application for CosmicConnect {
                     self.error = Some("KDE Connect backend unavailable".into());
                     return Task::none();
                 };
+                self.is_discovering = false;
 
-                return Task::perform(async move { backend.devices().await }, |devices| {
-                    Message::DevicesUpdated(devices)
-                })
+                return Task::perform(
+                    async move {
+                        let devices = backend.devices().await;
+                        let pairing = backend.pairing_request_ids().await;
+                        (devices, pairing)
+                    },
+                    |(devices, pairing)| Message::DevicesUpdated(devices, pairing),
+                )
                 .map(cosmic::Action::App);
             }
             Message::PopupClosed(popup_id) => {
@@ -195,10 +203,46 @@ impl cosmic::Application for CosmicConnect {
                 return Task::perform(async {}, |_| Message::RefreshDevices)
                     .map(cosmic::Action::App);
             }
-            Message::DevicesUpdated(devices) => {
-                self.devices = devices;
+            Message::DevicesUpdated(devices, pairing_ids) => {
+                log::warn!("DevicesUpdated: got {} devices, {} pairing requests", devices.len(), pairing_ids.len());
+                let mut merged = devices;
+                for pid in &pairing_ids {
+                    if !merged.iter().any(|d| &d.id == pid) {
+                        merged.push(crate::model::Device {
+                            id: pid.clone(),
+                            name: "Unknown device".into(),
+                            device_type: DeviceType::Unknown("".into()),
+                            is_reachable: true,
+                            is_paired: false,
+                            pair_state: 2,
+                            battery: None,
+                            supported_plugins: vec![],
+                            loaded_plugins: vec![],
+                        });
+                    }
+                }
+                self.devices = merged;
                 self.sync_drafts();
                 self.error = None;
+            }
+            Message::DiscoverDevices => {
+                log::warn!("DiscoverDevices: starting discovery");
+                let Some(backend) = self.backend.clone() else {
+                    self.error = Some("KDE Connect backend unavailable".into());
+                    return Task::none();
+                };
+                self.is_discovering = true;
+                self.error = None;
+                return Task::perform(
+                    async move {
+                        backend.force_discovery().await;
+                        tokio::time::sleep(Duration::from_secs(4)).await;
+                    },
+                    |_| {
+                        Message::RefreshDevices
+                    },
+                )
+                .map(cosmic::Action::App);
             }
             Message::BackendError(error) => {
                 self.error = Some(error);
@@ -372,15 +416,27 @@ impl cosmic::Application for CosmicConnect {
             .on_press(Message::RefreshDevices)
             .padding([6, 10]);
 
+        let discover_label = if self.is_discovering {
+            "Discovering…"
+        } else {
+            "Discover"
+        };
+        let discover_button = button::custom(text::caption(discover_label))
+            .on_press(Message::DiscoverDevices)
+            .padding([6, 10]);
+
         content.push(
             container(
                 column![
-                    row![local_badge, remote_badge, refresh_button]
+                    row![local_badge, remote_badge]
                         .spacing(10)
+                        .align_y(Alignment::Center),
+                    row![refresh_button, discover_button]
+                        .spacing(8)
                         .align_y(Alignment::Center),
                     text::caption(status_text),
                 ]
-                .spacing(8),
+                .spacing(6),
             )
             .padding([10, 16])
             .into(),
@@ -420,10 +476,35 @@ impl cosmic::Application for CosmicConnect {
                 .into(),
             );
         } else {
-            let paired_devices: Vec<&Device> = self.devices.iter().filter(|device| device.is_paired).collect();
-            let available_devices: Vec<&Device> = self.devices.iter().filter(|device| !device.is_paired).collect();
+            let pending_pairs: Vec<&Device> = self.devices.iter().filter(|d| d.pair_state == 2).collect();
+            let paired_devices: Vec<&Device> = self.devices.iter().filter(|d| d.is_paired).collect();
+            let available_devices: Vec<&Device> = self.devices.iter().filter(|d| !d.is_paired && d.pair_state != 2).collect();
+
+            if !pending_pairs.is_empty() {
+                content.push(
+                    container(row![
+                        icon::from_name("dialog-information-symbolic").size(14),
+                        text::caption("Incoming pairing request"),
+                    ].spacing(6).align_y(Alignment::Center))
+                        .padding([10, 16, 4, 16])
+                        .into(),
+                );
+                for (index, device) in pending_pairs.iter().enumerate() {
+                    if index > 0 {
+                        content.push(divider::horizontal::default().into());
+                    }
+                    let draft = self
+                        .drafts
+                        .get(&device.id)
+                        .expect("draft state should exist for each device");
+                    content.push(device_row(device, draft).into());
+                }
+            }
 
             if !paired_devices.is_empty() {
+                if !pending_pairs.is_empty() {
+                    content.push(divider::horizontal::default().into());
+                }
                 content.push(
                     container(text::caption("Paired devices"))
                         .padding([10, 16, 4, 16])
@@ -442,7 +523,7 @@ impl cosmic::Application for CosmicConnect {
             }
 
             if !available_devices.is_empty() {
-                if !paired_devices.is_empty() {
+                if !pending_pairs.is_empty() || !paired_devices.is_empty() {
                     content.push(divider::horizontal::default().into());
                 }
                 content.push(
@@ -463,9 +544,15 @@ impl cosmic::Application for CosmicConnect {
             }
         }
 
+        let body = column::with_children(content).spacing(0);
+
+        let panel = scrollable(container(body).padding(8).width(Length::Fill))
+            .height(Length::Shrink)
+            .width(Length::Fill);
+
         self.core
             .applet
-            .popup_container(scrollable(column::with_children(content)).height(Length::Shrink))
+            .popup_container(panel)
             .into()
     }
 
@@ -474,7 +561,7 @@ impl cosmic::Application for CosmicConnect {
             unfold(PollState::new(), |mut state| async {
                 tokio::time::sleep(POLL_INTERVAL).await;
                 let msg = match state.poll().await {
-                    Ok(devices) => Message::DevicesUpdated(devices),
+                    Ok((devices, pairing)) => Message::DevicesUpdated(devices, pairing),
                     Err(e) => Message::BackendError(e),
                 };
                 Some((msg, state))
@@ -492,16 +579,25 @@ impl PollState {
         Self { backend: None }
     }
 
-    async fn poll(&mut self) -> Result<Vec<Device>, String> {
+    async fn poll(&mut self) -> Result<(Vec<Device>, Vec<String>), String> {
         if self.backend.is_none() {
             match KdeConnectBackend::new().await {
                 Ok(backend) => self.backend = Some(backend),
-                Err(error) => return Err(format!("D-Bus: {error}")),
+                Err(error) => {
+                    log::warn!("Poll: D-Bus connection failed: {error}");
+                    return Err(format!("D-Bus: {error}"));
+                }
             }
         }
 
         let backend = self.backend.as_ref().unwrap();
-        Ok(backend.devices().await)
+        let devices = backend.devices().await;
+        let pairing = backend.pairing_request_ids().await;
+        log::warn!("Poll: found {} devices, {} pairing requests", devices.len(), pairing.len());
+        for d in &devices {
+            log::warn!("Poll: device '{}' (reachable={}, paired={}, state={})", d.name, d.is_reachable, d.is_paired, d.pair_state);
+        }
+        Ok((devices, pairing))
     }
 }
 
