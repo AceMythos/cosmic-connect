@@ -1,4 +1,5 @@
 use std::process;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -53,6 +54,25 @@ async fn main() {
             }
             if device.has_plugin("kdeconnect_share") {
                 println!("    Share:  available");
+            }
+            if device.has_plugin("kdeconnect_sms") {
+                println!("    SMS:    available");
+                backend.request_all_conversations(&device.id).await;
+                println!("    (requested conversations, waiting 4s…)");
+                tokio::time::sleep(Duration::from_secs(4)).await;
+                let convos = backend.active_conversations(&device.id).await;
+                println!("    Conversations: {}", convos.len());
+                for c in &convos {
+                    let preview = if c.body.len() > 40 {
+                        format!("{}…", &c.body[..40])
+                    } else {
+                        c.body.clone()
+                    };
+                    println!("      thread={} from={}: {} (type={})",
+                        c.thread_id,
+                        c.addresses.first().map(|a| a.address.as_str()).unwrap_or("?"),
+                        preview, c.message_type);
+                }
             }
         }
 

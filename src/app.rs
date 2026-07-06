@@ -16,7 +16,7 @@ use cosmic::{Action, Element, Task};
 use futures_util::stream::unfold;
 
 use crate::backend::KdeConnectBackend;
-use crate::model::{ActionType, Device, DeviceType};
+use crate::model::{ActionType, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
 
 const ID: &str = "io.github.acemythos.Connect";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -28,6 +28,14 @@ struct DeviceDraft {
     share_url: String,
     selected_file: String,
     status: Option<String>,
+    conversations: Vec<ConversationMessage>,
+    selected_conversation: Option<i64>,
+    reply_text: String,
+    sms_busy: bool,
+    notifications: Vec<Notification>,
+    selected_notification: Option<String>,
+    notify_reply_text: String,
+    player: Option<PlayerInfo>,
 }
 
 #[derive(Default)]
@@ -60,6 +68,21 @@ pub enum Message {
     ReadClipboard(String),
     ClipboardReadFinished(String, Result<String, String>),
     DiscoverDevices,
+    RefreshConversations(String),
+    ConversationsLoaded(String, Vec<ConversationMessage>),
+    SelectConversation(String, i64),
+    ReplyTextChanged(String, String),
+    SendReply(String, i64),
+    RefreshNotifications(String),
+    NotificationsLoaded(String, Vec<Notification>),
+    SelectNotification(String, String),
+    NotifyReplyChanged(String, String),
+    SendNotifyReply(String, String),
+    DismissNotification(String, String),
+    RefreshPlayer(String),
+    PlayerInfoUpdated(String, Option<PlayerInfo>),
+    MediaAction(String, String),
+    SelectPlayer(String, String),
 }
 
 impl CosmicConnect {
@@ -224,6 +247,30 @@ impl cosmic::Application for CosmicConnect {
                 self.devices = merged;
                 self.sync_drafts();
                 self.error = None;
+
+                let mut tasks = Task::none();
+                for device in &self.devices {
+                    if !device.is_reachable { continue; }
+                    if device.has_plugin("kdeconnect_notifications") {
+                        let Some(backend) = self.backend.clone() else { continue; };
+                        let did = device.id.clone();
+                        let did2 = did.clone();
+                        tasks = tasks.chain(Task::perform(
+                            async move { backend.fetch_notifications(&did).await },
+                            move |n| Message::NotificationsLoaded(did2, n),
+                        ).map(cosmic::Action::App));
+                    }
+                    if device.has_plugin("kdeconnect_mprisremote") {
+                        let Some(backend) = self.backend.clone() else { continue; };
+                        let did = device.id.clone();
+                        let did2 = did.clone();
+                        tasks = tasks.chain(Task::perform(
+                            async move { backend.player_info(&did).await },
+                            move |p| Message::PlayerInfoUpdated(did2, p),
+                        ).map(cosmic::Action::App));
+                    }
+                }
+                return tasks;
             }
             Message::DiscoverDevices => {
                 log::warn!("DiscoverDevices: starting discovery");
@@ -334,6 +381,114 @@ impl cosmic::Application for CosmicConnect {
 
                 return Task::perform(async {}, |_| Message::RefreshDevices)
                     .map(cosmic::Action::App);
+            }
+            Message::RefreshConversations(device_id) => {
+                let Some(backend) = self.backend.clone() else {
+                    self.draft_mut(&device_id).sms_busy = false;
+                    return Task::none();
+                };
+                self.draft_mut(&device_id).sms_busy = true;
+                let did = device_id.clone();
+                return Task::perform(
+                    async move {
+                        backend.request_all_conversations(&did).await;
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        let convos = backend.active_conversations(&did).await;
+                        convos
+                    },
+                    move |convos| Message::ConversationsLoaded(device_id, convos),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::ConversationsLoaded(device_id, conversations) => {
+                let draft = self.draft_mut(&device_id);
+                draft.conversations = conversations;
+                draft.sms_busy = false;
+            }
+            Message::SelectConversation(device_id, thread_id) => {
+                let draft = self.draft_mut(&device_id);
+                draft.selected_conversation = Some(thread_id);
+                draft.reply_text.clear();
+            }
+            Message::ReplyTextChanged(device_id, text) => {
+                self.draft_mut(&device_id).reply_text = text;
+            }
+            Message::SendReply(device_id, thread_id) => {
+                let text = self.draft_mut(&device_id).reply_text.clone();
+                if text.trim().is_empty() {
+                    return Task::none();
+                }
+                self.draft_mut(&device_id).reply_text.clear();
+                let action = ActionType::ReplyToConversation(thread_id, text);
+                return Task::perform(
+                    async {},
+                    move |_| Message::PerformAction(device_id, action),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::RefreshNotifications(device_id) => {
+                let Some(backend) = self.backend.clone() else { return Task::none(); };
+                let did = device_id.clone();
+                return Task::perform(
+                    async move { backend.fetch_notifications(&did).await },
+                    move |notifs| Message::NotificationsLoaded(device_id, notifs),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::NotificationsLoaded(device_id, notifications) => {
+                self.draft_mut(&device_id).notifications = notifications;
+            }
+            Message::SelectNotification(device_id, internal_id) => {
+                let draft = self.draft_mut(&device_id);
+                draft.selected_notification = Some(internal_id);
+                draft.notify_reply_text.clear();
+            }
+            Message::NotifyReplyChanged(device_id, text) => {
+                self.draft_mut(&device_id).notify_reply_text = text;
+            }
+            Message::SendNotifyReply(device_id, internal_id) => {
+                let text = self.draft_mut(&device_id).notify_reply_text.clone();
+                if text.trim().is_empty() { return Task::none(); }
+                self.draft_mut(&device_id).notify_reply_text.clear();
+                let action = ActionType::ReplyToNotification(internal_id, text);
+                return Task::perform(
+                    async {},
+                    move |_| Message::PerformAction(device_id, action),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::DismissNotification(device_id, internal_id) => {
+                return Task::perform(
+                    async {},
+                    move |_| Message::PerformAction(device_id, ActionType::DismissNotification(internal_id)),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::RefreshPlayer(device_id) => {
+                let Some(backend) = self.backend.clone() else { return Task::none(); };
+                let did = device_id.clone();
+                return Task::perform(
+                    async move { backend.player_info(&did).await },
+                    move |player| Message::PlayerInfoUpdated(device_id, player),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::PlayerInfoUpdated(device_id, player) => {
+                self.draft_mut(&device_id).player = player;
+            }
+            Message::MediaAction(device_id, action) => {
+                return Task::perform(
+                    async {},
+                    move |_| Message::PerformAction(device_id, ActionType::MediaAction(action)),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::SelectPlayer(device_id, player) => {
+                return Task::perform(
+                    async {},
+                    move |_| Message::PerformAction(device_id, ActionType::SelectPlayer(player)),
+                )
+                .map(cosmic::Action::App);
             }
         }
 
@@ -870,6 +1025,228 @@ fn device_row<'a>(device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Mes
             .spacing(6)
             .padding([8, 0, 0, 0])
             .into(),
+        );
+    }
+
+    if device.is_reachable && device.has_plugin("kdeconnect_sms") {
+        let mut sms_children: Vec<Element<Message>> = vec![];
+
+        sms_children.push(
+            row![
+                text::caption("SMS"),
+                button::custom(if draft.sms_busy {
+                    text::caption("Loading…")
+                } else {
+                    text::caption("Refresh")
+                })
+                .on_press(Message::RefreshConversations(device.id.clone()))
+                .padding([2, 8]),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+
+        for msg in &draft.conversations {
+            let is_selected = draft.selected_conversation == Some(msg.thread_id);
+            let preview = if msg.body.len() > 40 {
+                format!("{}…", &msg.body[..40])
+            } else {
+                msg.body.clone()
+            };
+            let sender = if msg.is_incoming() {
+                msg.sender().to_string()
+            } else {
+                "Me".to_string()
+            };
+
+            let entry = button::custom(
+                row![
+                    text::caption(format!("{}: {}", sender, preview)).size(12),
+                ]
+                .spacing(4),
+            )
+            .on_press(Message::SelectConversation(device.id.clone(), msg.thread_id))
+            .padding([4, 8])
+            .width(Length::Fill);
+
+            sms_children.push(entry.into());
+
+            if is_selected {
+                sms_children.push(
+                    row![
+                        text_input::text_input("Reply…", &draft.reply_text)
+                            .on_input({
+                                let did = device.id.clone();
+                                move |v| Message::ReplyTextChanged(did.clone(), v)
+                            })
+                            .width(Length::Fill),
+                        button::custom(text::caption("Send"))
+                            .on_press(Message::SendReply(device.id.clone(), msg.thread_id))
+                            .padding([2, 8]),
+                    ]
+                    .spacing(6)
+                    .into(),
+                );
+            }
+        }
+
+        if draft.conversations.is_empty() && !draft.sms_busy {
+            sms_children.push(
+                text::caption("No conversations loaded. Tap Refresh.")
+                    .into(),
+            );
+        }
+
+        rows.push(
+            column::with_children(sms_children)
+                .spacing(4)
+                .padding([8, 0, 0, 0])
+                .into(),
+        );
+    }
+
+    if device.is_reachable && device.has_plugin("kdeconnect_notifications") {
+        let mut notif_children: Vec<Element<Message>> = vec![];
+
+        notif_children.push(
+            row![
+                text::caption("Notifications"),
+                button::custom(text::caption("Refresh"))
+                    .on_press(Message::RefreshNotifications(device.id.clone()))
+                    .padding([2, 8]),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+
+        let grouped: Vec<&Notification> = draft.notifications.iter().collect();
+        if grouped.is_empty() {
+            notif_children.push(text::caption("No notifications").into());
+        }
+        for notif in &draft.notifications {
+            let is_selected = draft.selected_notification.as_deref() == Some(&notif.internal_id);
+            let label = if notif.title.is_empty() {
+                format!("{}: {}", notif.app_name, notif.text)
+            } else {
+                format!("{}: {} - {}", notif.app_name, notif.title, notif.text)
+            };
+            let truncated = if label.len() > 60 {
+                format!("{}…", &label[..60])
+            } else {
+                label.clone()
+            };
+
+            let entry_row = row![
+                icon::from_name(if notif.app_name == "Telegram" { "telegram-symbolic" } else { "dialog-information-symbolic" }).size(12),
+                text::caption(truncated).size(11),
+            ]
+            .spacing(4)
+            .width(Length::Fill);
+
+            let entry = button::custom(entry_row)
+                .on_press(Message::SelectNotification(device.id.clone(), notif.internal_id.clone()))
+                .padding([4, 8])
+                .width(Length::Fill);
+
+            notif_children.push(entry.into());
+
+            if notif.dismissable {
+                notif_children.push(
+                    button::custom(row![
+                        icon::from_name("window-close-symbolic").size(10),
+                        text::caption("Dismiss"),
+                    ].spacing(4).align_y(Alignment::Center))
+                        .on_press(Message::DismissNotification(device.id.clone(), notif.internal_id.clone()))
+                        .padding([2, 6])
+                        .into(),
+                );
+            }
+
+            if is_selected && !notif.reply_id.is_empty() {
+                notif_children.push(
+                    row![
+                        text_input::text_input("Reply to notification…", &draft.notify_reply_text)
+                            .on_input({
+                                let did = device.id.clone();
+                                move |v| Message::NotifyReplyChanged(did.clone(), v)
+                            })
+                            .width(Length::Fill),
+                        button::custom(text::caption("Send"))
+                            .on_press(Message::SendNotifyReply(device.id.clone(), notif.internal_id.clone()))
+                            .padding([2, 8]),
+                    ]
+                    .spacing(6)
+                    .into(),
+                );
+            }
+        }
+
+        rows.push(
+            column::with_children(notif_children)
+                .spacing(4)
+                .padding([8, 0, 0, 0])
+                .into(),
+        );
+    }
+
+    if device.is_reachable && device.has_plugin("kdeconnect_mprisremote") {
+        let mut player_children: Vec<Element<Message>> = vec![];
+
+        player_children.push(text::caption("Now Playing").into());
+
+        if let Some(player) = &draft.player {
+            if player.title.is_empty() && player.artist.is_empty() {
+                player_children.push(text::caption("Nothing playing").into());
+            } else {
+                player_children.push(
+                    column![
+                        text::caption(&player.title),
+                        text::caption(format!("{} — {}", player.artist, player.album)).size(11),
+                    ]
+                    .spacing(2)
+                    .into(),
+                );
+
+                let mut controls = row![].spacing(6);
+                controls = controls.push(
+                    button::custom(text::caption("⏮"))
+                        .on_press(Message::MediaAction(device.id.clone(), "Previous".into()))
+                        .padding([4, 8]),
+                );
+                controls = controls.push(
+                    button::custom(text::caption(if player.is_playing { "⏸" } else { "▶" }))
+                        .on_press(Message::MediaAction(device.id.clone(), if player.is_playing { "Pause".into() } else { "Play".into() }))
+                        .padding([4, 10]),
+                );
+                controls = controls.push(
+                    button::custom(text::caption("⏭"))
+                        .on_press(Message::MediaAction(device.id.clone(), "Next".into()))
+                        .padding([4, 8]),
+                );
+
+                if player.can_seek && player.length > 0 {
+                    let progress = player.position as f32 / player.length as f32;
+                    player_children.push(
+                        progress_bar::determinate_linear(progress.clamp(0.0, 1.0))
+                            .width(Length::Fill)
+                            .girth(6)
+                            .into(),
+                    );
+                }
+
+                player_children.push(controls.into());
+            }
+        } else {
+            player_children.push(text::caption("Loading...").into());
+        }
+
+        rows.push(
+            column::with_children(player_children)
+                .spacing(4)
+                .padding([8, 0, 0, 0])
+                .into(),
         );
     }
 

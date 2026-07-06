@@ -1,6 +1,6 @@
 use zbus::{Connection, Proxy, Result};
 
-use crate::model::{ActionType, BatteryInfo, Device, DeviceType};
+use crate::model::{ActionType, Attachment, BatteryInfo, ConversationAddress, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
 
 const KDE_CONNECT_SERVICE: &str = "org.kde.kdeconnect";
 const DAEMON_PATH: &str = "/modules/kdeconnect";
@@ -343,6 +343,192 @@ impl KdeConnectBackend {
                 self.unpair(device_id).await;
                 Ok("Device unpaired".into())
             }
+            ActionType::ReplyToConversation(thread_id, ref text) => {
+                self.reply_to_conversation(device_id, *thread_id, text).await?;
+                Ok("Reply sent".into())
+            }
+            ActionType::SendSms(ref addresses, ref text) => {
+                self.send_sms(device_id, addresses, text).await?;
+                Ok("SMS sent".into())
+            }
+            ActionType::DismissNotification(ref internal_id) => {
+                self.dismiss_notification(device_id, internal_id).await;
+                Ok("Notification dismissed".into())
+            }
+            ActionType::ReplyToNotification(ref internal_id, ref text) => {
+                self.reply_to_notification(device_id, internal_id, text).await?;
+                Ok("Reply sent to notification".into())
+            }
+            ActionType::MediaAction(ref action) => {
+                self.media_action(device_id, action).await;
+                Ok(format!("Media action '{action}' sent"))
+            }
+            ActionType::SelectPlayer(ref player) => {
+                self.select_player(device_id, player).await?;
+                Ok(format!("Player '{player}' selected"))
+            }
         }
+    }
+
+    pub async fn request_all_conversations(&self, device_id: &str) {
+        let p = Self::plugin_path(device_id, "sms");
+        match self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.sms"), "requestAllConversations", &(),
+        ).await {
+            Ok(_) => log::info!("requestAllConversations succeeded for {device_id}"),
+            Err(e) => log::warn!("requestAllConversations failed for {device_id}: {e}"),
+        }
+    }
+
+    pub async fn active_conversations(&self, device_id: &str) -> Vec<ConversationMessage> {
+        let p = Self::device_path(device_id);
+        let result = self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.conversations"), "activeConversations", &(),
+        ).await;
+        match result {
+            Ok(reply) => {
+                let body = reply.body();
+                let raw: Vec<zvariant::Value> = body.deserialize().unwrap_or_default();
+                log::info!("activeConversations raw count: {}", raw.len());
+                raw.into_iter().filter_map(|v| {
+                    let json = serde_json::to_value(&v).ok()?;
+                    let arr = json.get("value")?.as_array()?.clone();
+                    serde_json::from_value(serde_json::Value::Array(arr)).ok()
+                }).collect()
+            }
+            Err(e) => {
+                log::warn!("activeConversations failed for {device_id}: {e}");
+                vec![]
+            },
+        }
+    }
+
+    pub async fn reply_to_conversation(&self, device_id: &str, thread_id: i64, message: &str) -> Result<()> {
+        let p = Self::device_path(device_id);
+        self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.conversations"), "replyToConversation",
+            &(thread_id, message, Vec::<zvariant::Value>::new()),
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn send_sms(&self, device_id: &str, addresses: &[String], message: &str) -> Result<()> {
+        let p = Self::plugin_path(device_id, "sms");
+        let addrs: Vec<ConversationAddress> = addresses.iter().map(|a| ConversationAddress { address: a.clone() }).collect();
+        let attachments: Vec<Attachment> = vec![];
+        self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.sms"), "sendSms",
+            &(addrs, message, attachments, -1i64),
+        ).await?;
+        Ok(())
+    }
+
+    fn notification_path(device_id: &str, notif_id: &str) -> String {
+        format!("/modules/kdeconnect/devices/{device_id}/notifications/{notif_id}")
+    }
+
+    pub async fn fetch_notifications(&self, device_id: &str) -> Vec<Notification> {
+        let p = Self::plugin_path(device_id, "notifications");
+        let ids: Vec<String> = match self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.notifications"), "activeNotifications", &(),
+        ).await {
+            Ok(reply) => reply.body().deserialize().unwrap_or_default(),
+            Err(e) => {
+                log::warn!("activeNotifications failed: {e}");
+                return vec![];
+            }
+        };
+
+        let mut notifs = Vec::with_capacity(ids.len());
+        for nid in &ids {
+            if let Some(n) = self.fetch_notification(device_id, nid).await {
+                notifs.push(n);
+            }
+        }
+        notifs
+    }
+
+    async fn fetch_notification(&self, device_id: &str, notif_id: &str) -> Option<Notification> {
+        let np = Self::notification_path(device_id, notif_id);
+        let iface = "org.kde.kdeconnect.device.notifications.notification";
+        let proxy = Proxy::new(&self.conn, KDE_CONNECT_SERVICE, np.as_str(), iface).await.ok()?;
+
+        Some(Notification {
+            id: notif_id.to_string(),
+            internal_id: proxy.get_property("internalId").await.ok().unwrap_or_default(),
+            app_name: proxy.get_property("appName").await.ok().unwrap_or_default(),
+            title: proxy.get_property("title").await.ok().unwrap_or_default(),
+            text: proxy.get_property("text").await.ok().unwrap_or_default(),
+            ticker: proxy.get_property("ticker").await.ok().unwrap_or_default(),
+            dismissable: proxy.get_property("dismissable").await.ok().unwrap_or_default(),
+            reply_id: proxy.get_property("replyId").await.ok().unwrap_or_default(),
+        })
+    }
+
+    pub async fn dismiss_notification(&self, device_id: &str, internal_id: &str) {
+        let notif_id = self.notif_id_for_internal_id(device_id, internal_id).await;
+        if let Some(nid) = notif_id {
+            let np = Self::notification_path(device_id, &nid);
+            let _ = self.conn.call_method(
+                Some(KDE_CONNECT_SERVICE), np.as_str(),
+                Some("org.kde.kdeconnect.device.notifications.notification"), "dismiss", &(),
+            ).await;
+        }
+    }
+
+    pub async fn reply_to_notification(&self, device_id: &str, internal_id: &str, text: &str) -> Result<()> {
+        let notif_id = self.notif_id_for_internal_id(device_id, internal_id).await;
+        if let Some(nid) = notif_id {
+            let np = Self::notification_path(device_id, &nid);
+            self.conn.call_method(
+                Some(KDE_CONNECT_SERVICE), np.as_str(),
+                Some("org.kde.kdeconnect.device.notifications.notification"), "sendReply", &(text,),
+            ).await?;
+        }
+        Ok(())
+    }
+
+    async fn notif_id_for_internal_id(&self, device_id: &str, internal_id: &str) -> Option<String> {
+        let notifs = self.fetch_notifications(device_id).await;
+        notifs.into_iter().find(|n| n.internal_id == internal_id).map(|n| n.id)
+    }
+
+    pub async fn player_info(&self, device_id: &str) -> Option<PlayerInfo> {
+        let p = Self::plugin_path(device_id, "mprisremote");
+        let iface = "org.kde.kdeconnect.device.mprisremote";
+        let proxy = Proxy::new(&self.conn, KDE_CONNECT_SERVICE, p.as_str(), iface).await.ok()?;
+
+        Some(PlayerInfo {
+            player: proxy.get_property("player").await.ok().unwrap_or_default(),
+            title: proxy.get_property("title").await.ok().unwrap_or_default(),
+            artist: proxy.get_property("artist").await.ok().unwrap_or_default(),
+            album: proxy.get_property("album").await.ok().unwrap_or_default(),
+            is_playing: proxy.get_property("isPlaying").await.ok().unwrap_or_default(),
+            can_seek: proxy.get_property("canSeek").await.ok().unwrap_or_default(),
+            length: proxy.get_property("length").await.ok().unwrap_or_default(),
+            position: proxy.get_property("position").await.ok().unwrap_or_default(),
+            volume: proxy.get_property("volume").await.ok().unwrap_or_default(),
+            player_list: proxy.get_property("playerList").await.ok().unwrap_or_default(),
+        })
+    }
+
+    pub async fn media_action(&self, device_id: &str, action: &str) {
+        let p = Self::plugin_path(device_id, "mprisremote");
+        let _ = self.conn.call_method(
+            Some(KDE_CONNECT_SERVICE), p.as_str(),
+            Some("org.kde.kdeconnect.device.mprisremote"), "sendAction", &(action,),
+        ).await;
+    }
+
+    pub async fn select_player(&self, device_id: &str, player: &str) -> Result<()> {
+        let p = Self::plugin_path(device_id, "mprisremote");
+        let proxy = Proxy::new(&self.conn, KDE_CONNECT_SERVICE, p.as_str(), "org.kde.kdeconnect.device.mprisremote").await?;
+        proxy.set_property("player", player).await?;
+        Ok(())
     }
 }
