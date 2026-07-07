@@ -178,13 +178,8 @@ impl KdeConnectBackend {
             Some("org.kde.kdeconnect.device.sftp"), "mountPoint", &(),
         ).await?.body().deserialize()?;
 
-        let storage_path = format!("{}/storage/emulated/0", mount_path);
-
-        let open_path = if tokio::fs::metadata(&storage_path).await.is_ok() {
-            storage_path
-        } else {
-            mount_path.clone()
-        };
+        let open_path = find_user_storage(&mount_path).await
+            .unwrap_or(mount_path);
 
         let _ = tokio::process::Command::new("xdg-open")
             .arg(&open_path)
@@ -531,4 +526,23 @@ impl KdeConnectBackend {
         proxy.set_property("player", player).await?;
         Ok(())
     }
+}
+
+async fn find_user_storage(prefix: &str) -> Option<String> {
+    let candidates = [
+        "storage/emulated/0",
+        "sdcard",
+        "Internal Storage",
+        "internal",
+        "0",
+    ];
+
+    for sub in &candidates {
+        let path = format!("{}/{}", prefix, sub);
+        if tokio::fs::metadata(&path).await.is_ok() {
+            return Some(path);
+        }
+    }
+
+    None
 }
