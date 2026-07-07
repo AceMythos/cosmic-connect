@@ -172,9 +172,20 @@ impl CosmicConnect {
         let icon_name = device.device_type.icon_name();
         let chevron = if is_expanded { "pan-down-symbolic" } else { "pan-end-symbolic" };
 
-        button::standard(&device.name)
-            .leading_icon(icon::from_name(icon_name).handle())
-            .trailing_icon(icon::from_name(chevron).handle())
+        let mut header = row![
+            icon::from_name(icon_name).size(16),
+            text(&device.name),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+        if let Some(bat) = &device.battery {
+            header = header.push(text(format!("{}%", bat.charge)));
+        }
+
+        header = header.push(icon::from_name(chevron).size(16));
+
+        button::custom(header)
             .on_press(Message::ToggleExpand(device.id.clone()))
             .width(Length::Fill)
             .into()
