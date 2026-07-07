@@ -107,7 +107,11 @@ impl CosmicConnect {
             return "Connecting…".into();
         }
         if let Some(device) = self.devices.iter().find(|d| d.is_reachable) {
-            format!("{} - Connected", device.name)
+            if let Some(bat) = &device.battery {
+                format!("{} - ({}%)", device.name, bat.charge)
+            } else {
+                format!("{} - Connected", device.name)
+            }
         } else if let Some(device) = self.devices.iter().find(|d| d.is_paired) {
             format!("{} - Offline", device.name)
         } else if !self.devices.is_empty() {
@@ -181,6 +185,12 @@ impl CosmicConnect {
 
         if let Some(bat) = &device.battery {
             header = header.push(cosmic::widget::container(row![]).width(Length::Fill));
+            let bat_icon = if bat.is_charging {
+                "battery-good-charging-symbolic"
+            } else {
+                "battery-symbolic"
+            };
+            header = header.push(icon::from_name(bat_icon).size(14));
             header = header.push(text(format!("{}%", bat.charge)));
         }
 
