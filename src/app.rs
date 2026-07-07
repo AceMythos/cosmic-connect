@@ -180,6 +180,7 @@ impl CosmicConnect {
         .align_y(Alignment::Center);
 
         if let Some(bat) = &device.battery {
+            header = header.push(cosmic::widget::container(row![]).width(Length::Fill));
             header = header.push(text(format!("{}%", bat.charge)));
         }
 
@@ -250,7 +251,12 @@ impl CosmicConnect {
         if buttons.is_empty() {
             None
         } else {
-            Some(row::with_children(buttons).spacing(6).into())
+            let section = column![
+                text::caption("Quick Actions"),
+                row::with_children(buttons).spacing(6),
+            ]
+            .spacing(4);
+            Some(container(section).padding([4, 0]).into())
         }
     }
 
@@ -491,28 +497,13 @@ impl CosmicConnect {
             .into(),
         );
 
-        if device.is_reachable && device.has_plugin("kdeconnect_sms") {
-            let mut sms: Vec<Element<Message>> = vec![];
-
-            sms.push(
-                row![
-                    text::caption("SMS"),
-                    button::custom(if draft.sms_busy {
-                        text::caption("Loading…")
-                    } else {
-                        text::caption("Refresh")
-                    })
-                    .on_press(Message::RefreshConversations(device.id.clone()))
-                    .padding([2, 8]),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into(),
-            );
+        if device.is_paired && device.is_reachable && device.has_plugin("kdeconnect_sms") {
+            children.push(divider::horizontal::default().into());
+            children.push(text::caption("SMS").into());
 
             if draft.conversations.is_empty() && !draft.sms_busy {
-                sms.push(
-                    button::custom(text::caption("Load conversations"))
+                children.push(
+                    button::custom(text::caption("Load Conversations"))
                         .on_press(Message::RefreshConversations(device.id.clone()))
                         .padding([4, 8])
                         .width(Length::Fill)
@@ -536,10 +527,10 @@ impl CosmicConnect {
                 .padding([4, 8])
                 .width(Length::Fill);
 
-                sms.push(entry.into());
+                children.push(entry.into());
 
                 if is_selected {
-                    sms.push(
+                    children.push(
                         row![
                             text_input::text_input("Reply…", &draft.reply_text)
                                 .on_input({
@@ -556,25 +547,18 @@ impl CosmicConnect {
                     );
                 }
             }
-
-            if !sms.is_empty() {
-                children.push(column::with_children(sms).spacing(4).into());
-            }
         }
 
         if device.is_reachable && device.has_plugin("kdeconnect_notifications") {
-            let mut notifs: Vec<Element<Message>> = vec![];
+            children.push(divider::horizontal::default().into());
+            children.push(text::caption("Notifications").into());
 
-            notifs.push(
-                row![
-                    text::caption("Notifications"),
-                    button::custom(text::caption("Refresh"))
-                        .on_press(Message::RefreshNotifications(device.id.clone()))
-                        .padding([2, 8]),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into(),
+            children.push(
+                button::custom(text::caption("Refresh Notifications"))
+                    .on_press(Message::RefreshNotifications(device.id.clone()))
+                    .padding([4, 8])
+                    .width(Length::Fill)
+                    .into(),
             );
 
             for notif in &draft.notifications {
@@ -602,10 +586,10 @@ impl CosmicConnect {
                     .padding([4, 8])
                     .width(Length::Fill);
 
-                notifs.push(entry.into());
+                children.push(entry.into());
 
                 if notif.dismissable {
-                    notifs.push(
+                    children.push(
                         button::custom(row![
                             icon::from_name("window-close-symbolic").size(10),
                             text::caption("Dismiss"),
@@ -617,7 +601,7 @@ impl CosmicConnect {
                 }
 
                 if is_selected && !notif.reply_id.is_empty() {
-                    notifs.push(
+                    children.push(
                         row![
                             text_input::text_input("Reply to notification…", &draft.notify_reply_text)
                                 .on_input({
@@ -634,15 +618,13 @@ impl CosmicConnect {
                     );
                 }
             }
-
-            if !notifs.is_empty() {
-                children.push(column::with_children(notifs).spacing(4).into());
-            }
         }
 
+        children.push(divider::horizontal::default().into());
+        children.push(text::caption("Device").into());
         children.push(
             row![
-                button::custom(text::caption("Refresh"))
+                button::custom(text::caption("Refresh Device"))
                     .on_press(Message::RefreshDevices)
                     .padding([4, 10]),
                 button::custom(if self.is_discovering {
