@@ -1068,7 +1068,12 @@ impl cosmic::Application for CosmicConnect {
 
     fn view(&self) -> Element<'_, Self::Message> {
         let suggested = self.core.applet.suggested_size(false);
-        let icon = icon::from_name("phone-symbolic")
+        let icon_name = if self.devices.iter().any(|d| d.is_reachable) {
+            "io.github.acemythos.Connect-symbolic"
+        } else {
+            "io.github.acemythos.Connect-off-symbolic"
+        };
+        let icon = icon::from_name(icon_name)
             .size(suggested.1.saturating_sub(4));
 
         let preview = text::caption(self.panel_preview()).size(12);

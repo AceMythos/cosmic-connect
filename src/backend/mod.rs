@@ -160,32 +160,22 @@ impl KdeConnectBackend {
     pub async fn browse_files(&self, id: &str) -> Result<String> {
         let p = Self::plugin_path(id, "sftp");
 
-        let mounted: bool = self.conn.call_method(
+        let result = self.conn.call_method(
             Some(KDE_CONNECT_SERVICE), p.as_str(),
-            Some("org.kde.kdeconnect.device.sftp"), "mountAndWait", &(),
-        ).await?.body().deserialize()?;
+            Some("org.kde.kdeconnect.device.sftp"), "startBrowsing", &(),
+        ).await?;
 
-        if !mounted {
+        let started: bool = result.body().deserialize()?;
+
+        if started {
+            Ok("Opened device files".into())
+        } else {
             let error: String = self.conn.call_method(
                 Some(KDE_CONNECT_SERVICE), p.as_str(),
                 Some("org.kde.kdeconnect.device.sftp"), "getMountError", &(),
             ).await?.body().deserialize()?;
-            return Err(zbus::Error::Failure(error));
+            Err(zbus::Error::Failure(error))
         }
-
-        let mount_path: String = self.conn.call_method(
-            Some(KDE_CONNECT_SERVICE), p.as_str(),
-            Some("org.kde.kdeconnect.device.sftp"), "mountPoint", &(),
-        ).await?.body().deserialize()?;
-
-        let open_path = find_user_storage(&mount_path).await
-            .unwrap_or(mount_path);
-
-        let _ = tokio::process::Command::new("xdg-open")
-            .arg(&open_path)
-            .spawn();
-
-        Ok(format!("Opened {}", open_path))
     }
 
     pub async fn request_pairing(&self, id: &str) {
@@ -528,21 +518,4 @@ impl KdeConnectBackend {
     }
 }
 
-async fn find_user_storage(prefix: &str) -> Option<String> {
-    let candidates = [
-        "storage/emulated/0",
-        "sdcard",
-        "Internal Storage",
-        "internal",
-        "0",
-    ];
 
-    for sub in &candidates {
-        let path = format!("{}/{}", prefix, sub);
-        if tokio::fs::metadata(&path).await.is_ok() {
-            return Some(path);
-        }
-    }
-
-    None
-}
