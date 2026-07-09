@@ -20,9 +20,9 @@ All actions run through D-Bus to the KDE Connect daemon. No direct device connec
 
 ## SCREENSHOTS
 
-![Screenshot 1](screenshots/Screenshot_2026-07-07_19-38-19.png)
-![Screenshot 2](screenshots/Screenshot_2026-07-07_19-39-30.png)
-![Screenshot 3](screenshots/Screenshot_2026-07-07_19-40-12.png)
+![Screenshot 1](screenshots/1.png)
+![Screenshot 2](screenshots/2.png)
+![Screenshot 3](screenshots/3.png)
 
 ## Building
 
