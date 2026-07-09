@@ -18,12 +18,20 @@ KDE Connect is usually launched as a separate app. This puts it in the panel as 
 
 All actions run through D-Bus to the KDE Connect daemon. No direct device connection; you still need KDE Connect running on both ends.
 
-## SCREENSHOTS
+## Screenshots
 
 <p align="center">
-  <img src="screenshots/1.jpeg" width="250" />
-  <img src="screenshots/2.jpeg" width="250" />
-  <img src="screenshots/3.jpeg" width="250" />
+  <a href="screenshots/full.jpeg">
+    <img src="screenshots/full.jpeg" width="250">
+  </a>
+
+  <a href="screenshots/connected.jpeg">
+    <img src="screenshots/connected.jpeg" width="250">
+  </a>
+
+  <a href="screenshots/compact.jpeg">
+    <img src="screenshots/compact.jpeg" width="250">
+  </a>
 </p>
 
 ## Building
