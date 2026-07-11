@@ -121,10 +121,11 @@ impl CosmicConnect {
         if let Some(device) = self.devices.iter().find(|d| d.is_reachable) {
             let net = self.drafts.get(&device.id).and_then(|d| d.connectivity.as_ref());
             if let Some(bat) = &device.battery {
+                let charge_label = if bat.is_charging { format!("{}%+", bat.charge) } else { format!("{}%", bat.charge) };
                 if let Some(conn) = net {
-                    format!("{} - ({}%) {} {}", device.name, bat.charge, conn.network_type, signal_bars(conn.signal_strength))
+                    format!("{} - ({}) {} {}", device.name, charge_label, conn.network_type, signal_bars(conn.signal_strength))
                 } else {
-                    format!("{} - ({}%)", device.name, bat.charge)
+                    format!("{} - ({})", device.name, charge_label)
                 }
             } else if let Some(conn) = net {
                 format!("{} - {} {} - Connected", device.name, conn.network_type, signal_bars(conn.signal_strength))
