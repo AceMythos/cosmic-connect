@@ -16,7 +16,7 @@ use cosmic::{Action, Element, Task};
 use futures_util::stream::unfold;
 
 use crate::backend::KdeConnectBackend;
-use crate::model::{ActionType, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
+use crate::model::{ActionType, ConnectivityInfo, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
 
 const ID: &str = "io.github.acemythos.Connect";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -38,6 +38,7 @@ struct DeviceDraft {
     selected_notification: Option<String>,
     notify_reply_text: String,
     player: Option<PlayerInfo>,
+    connectivity: Option<ConnectivityInfo>,
 }
 
 #[derive(Default)]
@@ -91,6 +92,7 @@ pub enum Message {
     ToggleAdvanced(String),
     ToggleClipboard(String),
     ToggleShare(String),
+    ConnectivityUpdated(String, Option<ConnectivityInfo>),
 }
 
 impl CosmicConnect {
@@ -172,7 +174,7 @@ impl CosmicConnect {
             .into()
     }
 
-    fn render_card_header<'a>(&self, device: &'a Device, is_expanded: bool) -> Element<'a, Message> {
+    fn render_card_header<'a>(&'a self, device: &'a Device, is_expanded: bool) -> Element<'a, Message> {
         let icon_name = device.device_type.icon_name();
         let chevron = if is_expanded { "pan-down-symbolic" } else { "pan-end-symbolic" };
 
@@ -182,6 +184,18 @@ impl CosmicConnect {
         ]
         .spacing(8)
         .align_y(Alignment::Center);
+
+        if let Some(conn) = self.drafts.get(&device.id).and_then(|d| d.connectivity.as_ref()) {
+            let signal_icon = match conn.signal_strength {
+                0 => "network-cellular-signal-none-symbolic",
+                1 => "network-cellular-signal-weak-symbolic",
+                2 => "network-cellular-signal-ok-symbolic",
+                3 => "network-cellular-signal-good-symbolic",
+                _ => "network-cellular-signal-excellent-symbolic",
+            };
+            header = header.push(icon::from_name(signal_icon).size(14));
+            header = header.push(text::caption(&conn.network_type).size(12));
+        }
 
         if let Some(bat) = &device.battery {
             header = header.push(cosmic::widget::container(row![]).width(Length::Fill));
@@ -823,6 +837,15 @@ impl cosmic::Application for CosmicConnect {
                             move |p| Message::PlayerInfoUpdated(did2, p),
                         ).map(cosmic::Action::App));
                     }
+                    if device.has_plugin("kdeconnect_connectivity_report") {
+                        let Some(backend) = self.backend.clone() else { continue; };
+                        let did = device.id.clone();
+                        let did2 = did.clone();
+                        tasks = tasks.chain(Task::perform(
+                            async move { backend.connectivity_info(&did).await },
+                            move |c| Message::ConnectivityUpdated(did2, c),
+                        ).map(cosmic::Action::App));
+                    }
                 }
                 return tasks;
             }
@@ -1029,6 +1052,9 @@ impl cosmic::Application for CosmicConnect {
             }
             Message::PlayerInfoUpdated(device_id, player) => {
                 self.draft_mut(&device_id).player = player;
+            }
+            Message::ConnectivityUpdated(device_id, connectivity) => {
+                self.draft_mut(&device_id).connectivity = connectivity;
             }
             Message::MediaAction(device_id, action) => {
                 return Task::perform(

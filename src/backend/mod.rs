@@ -1,6 +1,6 @@
 use zbus::{Connection, Proxy, Result};
 
-use crate::model::{ActionType, Attachment, BatteryInfo, ConversationAddress, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
+use crate::model::{ActionType, Attachment, BatteryInfo, ConnectivityInfo, ConversationAddress, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
 
 const KDE_CONNECT_SERVICE: &str = "org.kde.kdeconnect";
 const DAEMON_PATH: &str = "/modules/kdeconnect";
@@ -95,6 +95,17 @@ impl KdeConnectBackend {
         let p = Self::plugin_path(id, "battery");
         let proxy = Proxy::new(&self.conn, KDE_CONNECT_SERVICE, p.as_str(), "org.kde.kdeconnect.device.battery").await.ok()?;
         proxy.get_property("isCharging").await.ok()
+    }
+
+    pub async fn connectivity_info(&self, device_id: &str) -> Option<ConnectivityInfo> {
+        let p = Self::plugin_path(device_id, "connectivity_report");
+        let iface = "org.kde.kdeconnect.device.connectivity_report";
+        let proxy = Proxy::new(&self.conn, KDE_CONNECT_SERVICE, p.as_str(), iface).await.ok()?;
+
+        Some(ConnectivityInfo {
+            network_type: proxy.get_property("cellularNetworkType").await.ok().unwrap_or_default(),
+            signal_strength: proxy.get_property("cellularNetworkStrength").await.ok().unwrap_or(0),
+        })
     }
 
     pub async fn ring_device(&self, id: &str) {

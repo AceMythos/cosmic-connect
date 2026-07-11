@@ -52,6 +52,12 @@ pub struct BatteryInfo {
     pub is_charging: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ConnectivityInfo {
+    pub network_type: String,
+    pub signal_strength: i32,
+}
+
 #[derive(Debug, Clone)]
 pub enum DeviceType {
     Phone,
