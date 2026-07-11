@@ -1287,6 +1287,15 @@ impl cosmic::Application for CosmicConnect {
                         rf.active = false;
                     }
                 }
+                let notif_id = self.active_notifs.remove(&transfer_id).unwrap_or(0);
+                if notif_id == 0 { return Task::none(); }
+                let Some(backend) = self.backend.clone() else { return Task::none() };
+                return Task::perform(
+                    async move {
+                        let _ = backend.notify("Transfer failed", &error_string, notif_id).await;
+                    },
+                    |_| Message::NoOp,
+                ).map(cosmic::Action::App);
             }
             Message::FileReceived(device_id, file_path) => {
                 let file_name = file_path.rsplit('/').next()

@@ -546,7 +546,7 @@ impl KdeConnectBackend {
             body,
             Vec::<String>::new(),
             HashMap::<String, zvariant::Value>::new(),
-            if replaces_id != 0 { -1i32 } else { 5000i32 },
+            -1i32,
         )).await?;
 
         Ok(notif_id)
