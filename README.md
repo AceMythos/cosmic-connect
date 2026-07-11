@@ -72,6 +72,37 @@ Outputs device list. Useful for checking if KDE Connect is reachable over D-Bus.
 - Wayland-only (uses wl-paste)
 - No SMS/conversation UI yet
 
+## Transfer progress (incoming files)
+
+KDE Connect's stock D-Bus interface (`org.kde.kdeconnect.device.share`) only emits `shareReceived` when a file is **done** — no progress. To get live progress, the `SharePlugin` was patched with four extra signals:
+
+| Signal | Args |
+|---|---|
+| `transferStarted` | `transferId (s), fileName (s), totalBytes (t)` |
+| `transferProgress` | `transferId (s), bytesTransferred (t), totalBytes (t), percent (i)` |
+| `transferFinished` | `transferId (s), url (s)` |
+| `transferFailed` | `transferId (s), errorCode (i), errorString (s)` |
+
+**Patched fork**: https://github.com/AceMythos/kdeconnect-fork (branch `v23.08.5-patched`).
+
+The patch is ~30 lines across two files:
+
+- `plugins/share/shareplugin.h` — adds `QElapsedTimer` throttle member and four `Q_SCRIPTABLE` signals
+- `plugins/share/shareplugin.cpp` — in `receivePacket`'s payload branch: creates a UUID transfer ID, emits `transferStarted`, connects `KJob::processedAmount` (throttled to 150ms) to `transferProgress`, and emits `transferFinished`/`transferFailed` in the result lambda. `shareReceived` is preserved unchanged in `finished()` for backward compatibility.
+
+The applet subscribes to all signals on the share interface via `MatchRule` (no member filter). The `ShareSignalState` loop parses each message's `header.member()` and dispatches to the appropriate `Message` variant. Active transfers show a progress bar + percentage in the popup, and the system notification updates every 5%.
+
+To test:
+
+```bash
+# kill system daemon, run patched one
+killall kdeconnectd
+/path/to/kdeconnect-fork/build/bin/kdeconnectd
+
+# or after make install
+~/.local/lib/x86_64-linux-gnu/libexec/kdeconnectd
+```
+
 ## Contributing
 
 Bug reports and PRs welcome. Test against live D-Bus before submitting.
