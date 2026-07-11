@@ -95,6 +95,16 @@ pub enum Message {
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
 }
 
+fn signal_bars(strength: i32) -> &'static str {
+    match strength.clamp(0, 4) {
+        0 => "○",
+        1 => "●○○○",
+        2 => "●●○○",
+        3 => "●●●○",
+        _ => "●●●●",
+    }
+}
+
 impl CosmicConnect {
     fn draft_mut(&mut self, device_id: &str) -> &mut DeviceDraft {
         self.drafts.entry(device_id.to_string()).or_default()
@@ -112,12 +122,12 @@ impl CosmicConnect {
             let net = self.drafts.get(&device.id).and_then(|d| d.connectivity.as_ref());
             if let Some(bat) = &device.battery {
                 if let Some(conn) = net {
-                    format!("{} - ({}%) {}", device.name, bat.charge, conn.network_type)
+                    format!("{} - ({}%) {} {}", device.name, bat.charge, conn.network_type, signal_bars(conn.signal_strength))
                 } else {
                     format!("{} - ({}%)", device.name, bat.charge)
                 }
             } else if let Some(conn) = net {
-                format!("{} - {} - Connected", device.name, conn.network_type)
+                format!("{} - {} {} - Connected", device.name, conn.network_type, signal_bars(conn.signal_strength))
             } else {
                 format!("{} - Connected", device.name)
             }
