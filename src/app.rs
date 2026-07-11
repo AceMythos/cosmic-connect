@@ -56,6 +56,8 @@ pub struct CosmicConnect {
     expanded_device: Option<String>,
     advanced_device: Option<String>,
     received_files: HashMap<String, Vec<ReceivedFile>>,
+    active_notifs: HashMap<String, u32>,
+    last_notif_pct: HashMap<String, i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +100,11 @@ pub enum Message {
     ToggleShare(String),
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
     FileReceived(String, String),
+    TransferStarted(String, String, String, u64),
+    TransferProgress(String, String, u64, u64, i32),
+    TransferFinished(String, String, String),
+    TransferFailed(String, String, i32, String),
+    NotifCreated(String, u32),
     ReceivedFilesViewed(String),
     NoOp,
 }
@@ -543,7 +550,7 @@ impl CosmicConnect {
         .into()
     }
 
-    fn render_advanced_content<'a>(&self, device: &Device, draft: &'a DeviceDraft) -> Element<'a, Message> {
+    fn render_advanced_content<'a>(&'a self, device: &Device, draft: &'a DeviceDraft) -> Element<'a, Message> {
         let mut children: Vec<Element<Message>> = Vec::new();
 
         children.push(
@@ -697,18 +704,40 @@ impl CosmicConnect {
                 }
 
                 for rf in files.iter().rev().take(10) {
-                    let short_path = rf.file_path.rsplit('/').next().unwrap_or(&rf.file_path);
-                    children.push(
-                        container(
-                            row![
-                                icon::from_name(if rf.unread { "document-new-symbolic" } else { "document-save-symbolic" }).size(12),
-                                text::caption(format!("{} → …/{short_path}", rf.file_name)).size(11),
-                            ].spacing(4)
-                        )
-                        .padding([4, 8])
-                        .width(Length::Fill)
-                        .into(),
-                    );
+                    if rf.active {
+                        children.push(
+                            container(
+                                column![
+                                    row![
+                                        icon::from_name("document-save-symbolic").size(12),
+                                        text::caption(&rf.file_name).size(11),
+                                        text::caption(format!("{}%", rf.progress)).size(10),
+                                    ].spacing(4).align_y(Alignment::Center),
+                                    progress_bar::determinate_linear(
+                                        (rf.progress as f32 / 100.0).clamp(0.0, 1.0)
+                                    )
+                                    .width(Length::Fill)
+                                    .girth(4),
+                                ].spacing(2)
+                            )
+                            .padding([4, 8])
+                            .width(Length::Fill)
+                            .into(),
+                        );
+                    } else {
+                        let short_path = rf.file_path.rsplit('/').next().unwrap_or(&rf.file_path);
+                        children.push(
+                            container(
+                                row![
+                                    icon::from_name(if rf.unread { "document-new-symbolic" } else { "document-save-symbolic" }).size(12),
+                                    text::caption(format!("{} → …/{short_path}", rf.file_name)).size(11),
+                                ].spacing(4)
+                            )
+                            .padding([4, 8])
+                            .width(Length::Fill)
+                            .into(),
+                        );
+                    }
                 }
             }
         }
@@ -1139,6 +1168,126 @@ impl cosmic::Application for CosmicConnect {
                 )
                 .map(cosmic::Action::App);
             }
+            Message::TransferStarted(device_id, transfer_id, file_name, total_bytes) => {
+                let did = device_id.clone();
+                let fname = file_name.clone();
+                let rf = ReceivedFile {
+                    device_id: did.clone(),
+                    file_path: String::new(),
+                    file_name: fname.clone(),
+                    received_at: std::time::SystemTime::now(),
+                    unread: false,
+                    transfer_id: transfer_id.clone(),
+                    progress: 0,
+                    active: true,
+                    total_bytes,
+                };
+                let size_str = if total_bytes >= 1_000_000_000 {
+                    format!("{:.1} GB", total_bytes as f64 / 1_000_000_000.0)
+                } else if total_bytes >= 1_000_000 {
+                    format!("{:.1} MB", total_bytes as f64 / 1_000_000.0)
+                } else if total_bytes >= 1_000 {
+                    format!("{:.1} KB", total_bytes as f64 / 1_000.0)
+                } else {
+                    format!("{total_bytes} B")
+                };
+                self.received_files.entry(device_id).or_default().push(rf);
+                let Some(backend) = self.backend.clone() else { return Task::none() };
+                let tid = transfer_id.clone();
+                return Task::perform(
+                    async move {
+                        backend.notify(&format!("Receiving: {fname}"), &format!("0% — {size_str}"), 0).await.ok()
+                    },
+                    move |notif_id| {
+                        if let Some(id) = notif_id {
+                            Message::NotifCreated(tid, id)
+                        } else {
+                            Message::NoOp
+                        }
+                    },
+                ).map(cosmic::Action::App);
+            }
+            Message::TransferProgress(device_id, transfer_id, _transferred, _total, percent) => {
+                let files = self.received_files.get_mut(&device_id);
+                if let Some(files) = files {
+                if let Some(rf) = files.iter_mut().find(|f| f.transfer_id == transfer_id) {
+                    rf.progress = percent.clamp(0, 100) as u32;
+                    }
+                }
+                let prev = self.last_notif_pct.get(&transfer_id).copied().unwrap_or(-5);
+                let pct_block = (percent / 5) * 5;
+                if pct_block <= prev { return Task::none(); }
+                self.last_notif_pct.insert(transfer_id.clone(), pct_block);
+                let Some(&notif_id) = self.active_notifs.get(&transfer_id) else { return Task::none() };
+                let Some(backend) = self.backend.clone() else { return Task::none() };
+                return Task::perform(
+                    async move {
+                        let _ = backend.notify("Transfer in progress", &format!("{percent}%"), notif_id).await;
+                    },
+                    |_| Message::NoOp,
+                ).map(cosmic::Action::App);
+            }
+            Message::TransferFinished(device_id, transfer_id, file_path) => {
+                let file_name = file_path.rsplit('/').next()
+                    .unwrap_or(&file_path)
+                    .to_string();
+                let notif_name = file_name.clone();
+
+                let device_name = self.devices.iter()
+                    .find(|d| d.id == device_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_default();
+
+                let files = self.received_files.entry(device_id.clone()).or_default();
+
+                if let Some(rf) = files.iter_mut().find(|f| f.transfer_id == transfer_id) {
+                    rf.file_path = file_path.clone();
+                    rf.progress = 100;
+                    rf.active = false;
+                    rf.file_name = file_name;
+                    rf.received_at = std::time::SystemTime::now();
+                    rf.unread = true;
+                } else {
+                    files.push(ReceivedFile {
+                        device_id: device_id.clone(),
+                        file_path: file_path.clone(),
+                        file_name,
+                        received_at: std::time::SystemTime::now(),
+                        unread: true,
+                        transfer_id: transfer_id.clone(),
+                        progress: 100,
+                        active: false,
+                        total_bytes: 0,
+                    });
+                }
+
+                if files.len() > MAX_RECEIVED_HISTORY {
+                    files.remove(0);
+                }
+
+                let notif_id = self.active_notifs.remove(&transfer_id).unwrap_or(0);
+                let dest_path = file_path.trim_start_matches("file://").to_string();
+                let backend = self.backend.clone();
+                return Task::perform(
+                    async move {
+                        let Some(backend) = backend else { return };
+                        let _ = backend.notify(
+                            &format!("File received from {device_name}"),
+                            &format!("{notif_name} → {dest_path}"),
+                            notif_id,
+                        ).await;
+                    },
+                    |_| Message::NoOp,
+                ).map(cosmic::Action::App);
+            }
+            Message::TransferFailed(device_id, transfer_id, _error_code, error_string) => {
+                log::warn!("Transfer {transfer_id} failed: {error_string}");
+                if let Some(files) = self.received_files.get_mut(&device_id) {
+                    if let Some(rf) = files.iter_mut().find(|f| f.transfer_id == transfer_id) {
+                        rf.active = false;
+                    }
+                }
+            }
             Message::FileReceived(device_id, file_path) => {
                 let file_name = file_path.rsplit('/').next()
                     .unwrap_or(&file_path)
@@ -1157,11 +1306,15 @@ impl cosmic::Application for CosmicConnect {
                     file_name,
                     received_at: std::time::SystemTime::now(),
                     unread: true,
+                    transfer_id: String::new(),
+                    progress: 100,
+                    active: false,
+                    total_bytes: 0,
                 };
 
                 let files = self.received_files.entry(device_id).or_default();
 
-                if files.last().is_some_and(|f| f.file_path == file_path) {
+                if files.iter().any(|f| f.file_path == notif_path && !f.file_path.is_empty()) {
                     return Task::none();
                 }
 
@@ -1174,9 +1327,10 @@ impl cosmic::Application for CosmicConnect {
                 return Task::perform(
                     async move {
                         let Some(backend) = backend else { return };
-                        let _ = backend.send_notification(
+                        let _ = backend.notify(
                             &format!("File received from {device_name}"),
                             &format!("{notif_name} → {notif_path}"),
+                            0,
                         ).await;
                     },
                     |_| Message::NoOp,
@@ -1188,6 +1342,9 @@ impl cosmic::Application for CosmicConnect {
                         file.unread = false;
                     }
                 }
+            }
+            Message::NotifCreated(transfer_id, notif_id) => {
+                self.active_notifs.insert(transfer_id, notif_id);
             }
             Message::NoOp => {}
             Message::ToggleExpand(id) => {
@@ -1485,8 +1642,6 @@ impl ShareSignalState {
                             .msg_type(zbus::message::Type::Signal)
                             .interface("org.kde.kdeconnect.device.share")
                             .unwrap()
-                            .member("shareReceived")
-                            .unwrap()
                             .build();
                         match MessageStream::for_match_rule(rule, &conn, None).await {
                             Ok(stream) => {
@@ -1514,13 +1669,61 @@ impl ShareSignalState {
                         Some(p) => p,
                         None => continue,
                     };
-                    if let Some(device_id) = path
+                    let device_id = match path
                         .strip_prefix("/modules/kdeconnect/devices/")
                         .and_then(|s| s.strip_suffix("/share"))
                     {
-                        if let Ok(file_path) = msg.body().deserialize::<String>() {
-                            return Message::FileReceived(device_id.to_string(), file_path);
+                        Some(id) => id.to_string(),
+                        None => continue,
+                    };
+                    let member = match header.member() {
+                        Some(m) => m.to_string(),
+                        None => continue,
+                    };
+
+                    match member.as_str() {
+                        "shareReceived" => {
+                            if let Ok(file_path) = msg.body().deserialize::<String>() {
+                                return Message::FileReceived(device_id, file_path);
+                            }
                         }
+                        "transferStarted" => {
+                            if let Ok((transfer_id, file_name, total_bytes)) =
+                                msg.body().deserialize::<(String, String, u64)>()
+                            {
+                                return Message::TransferStarted(
+                                    device_id, transfer_id, file_name, total_bytes,
+                                );
+                            }
+                        }
+                        "transferProgress" => {
+                            if let Ok((transfer_id, transferred, total, percent)) =
+                                msg.body().deserialize::<(String, u64, u64, i32)>()
+                            {
+                                return Message::TransferProgress(
+                                    device_id, transfer_id, transferred, total, percent,
+                                );
+                            }
+                        }
+                        "transferFinished" => {
+                            if let Ok((transfer_id, url)) =
+                                msg.body().deserialize::<(String, String)>()
+                            {
+                                return Message::TransferFinished(
+                                    device_id, transfer_id, url,
+                                );
+                            }
+                        }
+                        "transferFailed" => {
+                            if let Ok((transfer_id, code, error_str)) =
+                                msg.body().deserialize::<(String, i32, String)>()
+                            {
+                                return Message::TransferFailed(
+                                    device_id, transfer_id, code, error_str,
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Some(Err(e)) => {

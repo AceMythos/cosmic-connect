@@ -202,4 +202,8 @@ pub struct ReceivedFile {
     pub file_name: String,
     pub received_at: std::time::SystemTime,
     pub unread: bool,
+    pub transfer_id: String,
+    pub progress: u32,
+    pub active: bool,
+    pub total_bytes: u64,
 }
