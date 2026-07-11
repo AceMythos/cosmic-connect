@@ -14,12 +14,15 @@ use cosmic::widget::{
 };
 use cosmic::{Action, Element, Task};
 use futures_util::stream::unfold;
+use futures_util::StreamExt;
+use zbus::{MatchRule, MessageStream};
 
 use crate::backend::KdeConnectBackend;
-use crate::model::{ActionType, ConnectivityInfo, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
+use crate::model::{ActionType, ConnectivityInfo, ConversationMessage, Device, DeviceType, Notification, PlayerInfo, ReceivedFile};
 
 const ID: &str = "io.github.acemythos.Connect";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_RECEIVED_HISTORY: usize = 50;
 
 #[derive(Default)]
 struct DeviceDraft {
@@ -52,6 +55,7 @@ pub struct CosmicConnect {
     is_discovering: bool,
     expanded_device: Option<String>,
     advanced_device: Option<String>,
+    received_files: HashMap<String, Vec<ReceivedFile>>,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +97,9 @@ pub enum Message {
     ToggleClipboard(String),
     ToggleShare(String),
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
+    FileReceived(String, String),
+    ReceivedFilesViewed(String),
+    NoOp,
 }
 
 fn signal_bars(strength: i32) -> &'static str {
@@ -353,6 +360,19 @@ impl CosmicConnect {
                 ctx = ctx.push(controls);
                 return Some(container(ctx).padding([4, 0]).into());
             }
+        }
+
+        if let Some(rf) = self.received_files.get(&_device.id)
+            .and_then(|v| v.last())
+        {
+            let label = format!("Received: {}", rf.file_name);
+            let ctx = row![
+                icon::from_name("document-save-symbolic").size(14),
+                text::caption(label).size(11),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            return Some(container(ctx).padding([4, 0]).into());
         }
 
         if let Some(notif) = draft.notifications.first() {
@@ -656,6 +676,37 @@ impl CosmicConnect {
                                 .padding([2, 8]),
                         ]
                         .spacing(6)
+                        .into(),
+                    );
+                }
+            }
+        }
+
+        if let Some(files) = self.received_files.get(&device.id) {
+            if !files.is_empty() {
+                children.push(divider::horizontal::default().into());
+                children.push(text::caption("Received Files").into());
+
+                if files.iter().any(|f| f.unread) {
+                    children.push(
+                        button::custom(text::caption("Mark all read"))
+                            .on_press(Message::ReceivedFilesViewed(device.id.clone()))
+                            .padding([2, 6])
+                            .into(),
+                    );
+                }
+
+                for rf in files.iter().rev().take(10) {
+                    let short_path = rf.file_path.rsplit('/').next().unwrap_or(&rf.file_path);
+                    children.push(
+                        container(
+                            row![
+                                icon::from_name(if rf.unread { "document-new-symbolic" } else { "document-save-symbolic" }).size(12),
+                                text::caption(format!("{} → …/{short_path}", rf.file_name)).size(11),
+                            ].spacing(4)
+                        )
+                        .padding([4, 8])
+                        .width(Length::Fill)
                         .into(),
                     );
                 }
@@ -1088,6 +1139,57 @@ impl cosmic::Application for CosmicConnect {
                 )
                 .map(cosmic::Action::App);
             }
+            Message::FileReceived(device_id, file_path) => {
+                let file_name = file_path.rsplit('/').next()
+                    .unwrap_or(&file_path)
+                    .to_string();
+                let notif_name = file_name.clone();
+                let notif_path = file_path.clone();
+
+                let device_name = self.devices.iter()
+                    .find(|d| d.id == device_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_default();
+
+                let rf = ReceivedFile {
+                    device_id: device_id.clone(),
+                    file_path: file_path.clone(),
+                    file_name,
+                    received_at: std::time::SystemTime::now(),
+                    unread: true,
+                };
+
+                let files = self.received_files.entry(device_id).or_default();
+
+                if files.last().is_some_and(|f| f.file_path == file_path) {
+                    return Task::none();
+                }
+
+                files.push(rf);
+                if files.len() > MAX_RECEIVED_HISTORY {
+                    files.remove(0);
+                }
+
+                let backend = self.backend.clone();
+                return Task::perform(
+                    async move {
+                        let Some(backend) = backend else { return };
+                        let _ = backend.send_notification(
+                            &format!("File received from {device_name}"),
+                            &format!("{notif_name} → {notif_path}"),
+                        ).await;
+                    },
+                    |_| Message::NoOp,
+                ).map(cosmic::Action::App);
+            }
+            Message::ReceivedFilesViewed(device_id) => {
+                if let Some(files) = self.received_files.get_mut(&device_id) {
+                    for file in files.iter_mut() {
+                        file.unread = false;
+                    }
+                }
+            }
+            Message::NoOp => {}
             Message::ToggleExpand(id) => {
                 log::info!("ToggleExpand: id={:?}, current expanded={:?}", id, self.expanded_device);
                 if self.expanded_device.as_deref() == Some(&id) {
@@ -1130,10 +1232,21 @@ impl cosmic::Application for CosmicConnect {
         let icon = icon::from_name(icon_name)
             .size(suggested.1.saturating_sub(4));
 
+        let unread: usize = self.received_files.values()
+            .flat_map(|v| v.iter())
+            .filter(|f| f.unread)
+            .count();
+
         let preview = text::caption(self.panel_preview()).size(12);
-        let content = row![icon, preview]
+        let mut content = row![icon, preview]
             .spacing(6)
             .align_y(Alignment::Center);
+
+        if unread > 0 {
+            content = content.push(
+                text::caption(format!("({unread})")).size(11)
+            );
+        }
 
         let btn = self.core
             .applet
@@ -1304,14 +1417,21 @@ impl cosmic::Application for CosmicConnect {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::run_with(std::any::TypeId::of::<()>(), |_state| {
-            unfold(PollState::new(), |mut state| async {
+            let poll = unfold(PollState::new(), |mut state| async {
                 tokio::time::sleep(POLL_INTERVAL).await;
                 let msg = match state.poll().await {
                     Ok((devices, pairing)) => Message::DevicesUpdated(devices, pairing),
                     Err(e) => Message::BackendError(e),
                 };
                 Some((msg, state))
-            })
+            });
+
+            let signals = unfold(ShareSignalState::new(), |mut state| async {
+                let msg = state.next().await;
+                Some((msg, state))
+            });
+
+            futures_util::stream::select(poll, signals)
         })
     }
 }
@@ -1344,6 +1464,75 @@ impl PollState {
             log::debug!("Poll: device '{}' (reachable={}, paired={}, state={})", d.name, d.is_reachable, d.is_paired, d.pair_state);
         }
         Ok((devices, pairing))
+    }
+}
+
+struct ShareSignalState {
+    stream: Option<MessageStream>,
+}
+
+impl ShareSignalState {
+    fn new() -> Self {
+        Self { stream: None }
+    }
+
+    async fn next(&mut self) -> Message {
+        loop {
+            if self.stream.is_none() {
+                match zbus::Connection::session().await {
+                    Ok(conn) => {
+                        let rule = MatchRule::builder()
+                            .msg_type(zbus::message::Type::Signal)
+                            .interface("org.kde.kdeconnect.device.share")
+                            .unwrap()
+                            .member("shareReceived")
+                            .unwrap()
+                            .build();
+                        match MessageStream::for_match_rule(rule, &conn, None).await {
+                            Ok(stream) => {
+                                self.stream = Some(stream);
+                            }
+                            Err(e) => {
+                                log::warn!("Signal stream setup failed: {e}, retrying in 5s");
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("D-Bus connection failed: {e}, retrying in 5s");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                }
+            }
+
+            match self.stream.as_mut().unwrap().next().await {
+                Some(Ok(msg)) => {
+                    let header = msg.header();
+                    let path = match header.path() {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    if let Some(device_id) = path
+                        .strip_prefix("/modules/kdeconnect/devices/")
+                        .and_then(|s| s.strip_suffix("/share"))
+                    {
+                        if let Ok(file_path) = msg.body().deserialize::<String>() {
+                            return Message::FileReceived(device_id.to_string(), file_path);
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    log::warn!("Signal stream error: {e}");
+                    continue;
+                }
+                None => {
+                    log::info!("Signal stream ended, reconnecting");
+                    self.stream = None;
+                }
+            }
+        }
     }
 }
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use zbus::{Connection, Proxy, Result};
 
 use crate::model::{ActionType, Attachment, BatteryInfo, ConnectivityInfo, ConversationAddress, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
@@ -527,6 +529,27 @@ impl KdeConnectBackend {
         proxy.set_property("player", player).await?;
         Ok(())
     }
-}
 
+    pub async fn send_notification(&self, title: &str, body: &str) -> Result<()> {
+        let proxy = Proxy::new(
+            &self.conn,
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+        ).await?;
+
+        let _: u32 = proxy.call("Notify", &(
+            "COSMIC Connect",
+            0u32,
+            "io.github.acemythos.Connect-symbolic",
+            title,
+            body,
+            Vec::<String>::new(),
+            HashMap::<String, zvariant::Value>::new(),
+            5000i32,
+        )).await?;
+
+        Ok(())
+    }
+}
 

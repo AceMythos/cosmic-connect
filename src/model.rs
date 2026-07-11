@@ -194,3 +194,12 @@ impl ConversationMessage {
         self.addresses.first().map(|a| a.address.as_str()).unwrap_or("Unknown")
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct ReceivedFile {
+    pub device_id: String,
+    pub file_path: String,
+    pub file_name: String,
+    pub received_at: std::time::SystemTime,
+    pub unread: bool,
+}
