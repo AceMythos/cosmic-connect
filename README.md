@@ -36,7 +36,7 @@ All actions run through D-Bus to the KDE Connect daemon. No direct device connec
 
 ## Requirements
 
-This applet requires a **patched KDE Connect** with custom D-Bus signals for transfer progress and suppressed native notifications. Install the stock `kdeconnect` package first (for libraries and dependencies), then build the patched fork from source:
+The applet works with stock KDE Connect for basic pairing, clipboard, file sharing, and notifications. For **transfer progress** and **suppressed native notifications**, a patched fork is needed. Install the stock `kdeconnect` package first (for libraries and dependencies), then build from source:
 
 ```bash
 # System dependencies
@@ -54,7 +54,7 @@ make -j$(nproc)
 sudo make install
 ```
 
-This replaces the system `kdeconnectd` and plugins with the patched versions needed by cosmic-connect.
+This replaces the system `kdeconnectd` and plugins with patched versions that add live transfer progress signals and suppress duplicate notifications.
 
 ## Building
 
