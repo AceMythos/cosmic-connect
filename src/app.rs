@@ -1634,11 +1634,15 @@ impl cosmic::Application for CosmicConnect {
 
 struct PollState {
     backend: Option<KdeConnectBackend>,
+    next_discovery: tokio::time::Instant,
 }
 
 impl PollState {
     fn new() -> Self {
-        Self { backend: None }
+        Self {
+            backend: None,
+            next_discovery: tokio::time::Instant::now() + Duration::from_secs(30),
+        }
     }
 
     async fn poll(&mut self) -> Result<(Vec<Device>, Vec<String>), String> {
@@ -1659,6 +1663,14 @@ impl PollState {
         for d in &devices {
             log::debug!("Poll: device '{}' (reachable={}, paired={}, state={})", d.name, d.is_reachable, d.is_paired, d.pair_state);
         }
+
+        let has_reachable = devices.iter().any(|d| d.is_reachable);
+        if !has_reachable && tokio::time::Instant::now() >= self.next_discovery {
+            backend.force_discovery().await;
+            self.next_discovery = tokio::time::Instant::now() + Duration::from_secs(30);
+            log::info!("Auto-discovery triggered — no reachable devices");
+        }
+
         Ok((devices, pairing))
     }
 }
