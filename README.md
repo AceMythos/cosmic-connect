@@ -34,6 +34,28 @@ All actions run through D-Bus to the KDE Connect daemon. No direct device connec
   </a>
 </p>
 
+## Requirements
+
+This applet requires a **patched KDE Connect** with custom D-Bus signals for transfer progress and suppressed native notifications. Install the stock `kdeconnect` package first (for libraries and dependencies), then build the patched fork from source:
+
+```bash
+# System dependencies
+sudo apt build-dep kdeconnect
+sudo apt install cmake extra-cmake-modules libkf5kio-dev libkf5notifications-dev \
+                 libkf5dbusaddons-dev libkf5config-dev libkf5coreaddons-dev \
+                 libkf5i18n-dev qtbase5-dev qttools5-dev
+
+# Build and install patched KDE Connect
+git clone -b v23.08.5-patched https://github.com/AceMythos/kdeconnect-fork.git
+cd kdeconnect-fork
+mkdir build && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr
+make -j$(nproc)
+sudo make install
+```
+
+This replaces the system `kdeconnectd` and plugins with the patched versions needed by cosmic-connect.
+
 ## Building
 
 ```bash
@@ -45,6 +67,7 @@ Requires:
 - libcosmic (from pop-os/libcosmic)
 - Linux with D-Bus
 - wl-paste (for clipboard)
+- Patched KDE Connect from above
 
 The applet discovers itself via the `.desktop` file and appears in the panel automatically after install.
 
@@ -83,9 +106,7 @@ KDE Connect's stock D-Bus interface (`org.kde.kdeconnect.device.share`) only emi
 | `transferFinished` | `transferId (s), url (s)` |
 | `transferFailed` | `transferId (s), errorCode (i), errorString (s)` |
 
-**Patched fork**: https://github.com/AceMythos/kdeconnect-fork (branch `v23.08.5-patched`).
-
-The patch is ~30 lines across two files:
+The patched fork (see [Requirements](#requirements)) adds these four signals to the stock share interface. The patch is ~30 lines across two files:
 
 - `plugins/share/shareplugin.h` — adds `QElapsedTimer` throttle member and four `Q_SCRIPTABLE` signals
 - `plugins/share/shareplugin.cpp` — in `receivePacket`'s payload branch: creates a UUID transfer ID, emits `transferStarted`, connects `KJob::processedAmount` (throttled to 150ms) to `transferProgress`, and emits `transferFinished`/`transferFailed` in the result lambda. `shareReceived` is preserved unchanged in `finished()` for backward compatibility.
