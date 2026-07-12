@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,6 +60,7 @@ pub struct CosmicConnect {
     received_files: HashMap<String, Vec<ReceivedFile>>,
     active_notifs: HashMap<String, u32>,
     last_notif_pct: HashMap<String, i32>,
+    notified_pair_ids: HashSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -925,6 +926,28 @@ impl cosmic::Application for CosmicConnect {
                 self.error = None;
 
                 let mut tasks = Task::none();
+
+                for pid in &pairing_ids {
+                    if self.notified_pair_ids.insert(pid.clone()) {
+                        let dev_name = self.devices.iter()
+                            .find(|d| d.id == *pid)
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| "Unknown device".into());
+                        if let Some(backend) = self.backend.clone() {
+                            let name = dev_name;
+                            tasks = tasks.chain(Task::perform(
+                                async move {
+                                    let _ = backend.notify(
+                                        "Pairing request",
+                                        &format!("{name} wants to pair"),
+                                        0,
+                                    ).await;
+                                },
+                                |_| Message::NoOp,
+                            ).map(cosmic::Action::App));
+                        }
+                    }
+                }
                 for device in &self.devices {
                     if !device.is_reachable { continue; }
                     if device.has_plugin("kdeconnect_notifications") {
@@ -973,6 +996,8 @@ impl cosmic::Application for CosmicConnect {
                         ).map(cosmic::Action::App));
                     }
                 }
+
+                self.notified_pair_ids.retain(|id| pairing_ids.contains(id));
 
                 return tasks;
             }
