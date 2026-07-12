@@ -53,6 +53,8 @@ pub struct CosmicConnect {
     error: Option<String>,
     backend: Option<Arc<KdeConnectBackend>>,
     is_discovering: bool,
+    auto_discovering: bool,
+    next_auto_discovery: Option<std::time::Instant>,
     expanded_device: Option<String>,
     advanced_device: Option<String>,
     received_files: HashMap<String, Vec<ReceivedFile>>,
@@ -747,13 +749,23 @@ impl CosmicConnect {
                 button::custom(text::caption("Refresh Device"))
                     .on_press(Message::RefreshDevices)
                     .padding([4, 10]),
-                button::custom(if self.is_discovering {
-                    text::caption("Discovering…")
-                } else {
-                    text::caption("Discover")
-                })
-                .on_press(Message::DiscoverDevices)
-                .padding([4, 10]),
+                {
+                    let label = if self.is_discovering {
+                        "Discovering…"
+                    } else if self.auto_discovering {
+                        "Auto-searching…"
+                    } else {
+                        "Discover"
+                    };
+                    button::custom(if self.auto_discovering {
+                        text::caption(label)
+                            .size(10)
+                    } else {
+                        text::caption(label)
+                    })
+                    .on_press(Message::DiscoverDevices)
+                    .padding([4, 10])
+                },
                 button::custom(text::caption("Unpair"))
                     .on_press(Message::PerformAction(device.id.clone(), ActionType::Unpair))
                     .padding([4, 10]),
@@ -943,6 +955,25 @@ impl cosmic::Application for CosmicConnect {
                         ).map(cosmic::Action::App));
                     }
                 }
+
+                let has_reachable = self.devices.iter().any(|d| d.is_reachable);
+                let now = std::time::Instant::now();
+                if has_reachable {
+                    self.auto_discovering = false;
+                    self.next_auto_discovery = None;
+                } else if self.next_auto_discovery.map_or(true, |t| now >= t) {
+                    self.auto_discovering = true;
+                    self.next_auto_discovery = Some(now + Duration::from_secs(30));
+                    if let Some(backend) = self.backend.clone() {
+                        tasks = tasks.chain(Task::perform(
+                            async move {
+                                backend.force_discovery().await;
+                            },
+                            |_| Message::NoOp,
+                        ).map(cosmic::Action::App));
+                    }
+                }
+
                 return tasks;
             }
             Message::DiscoverDevices => {
@@ -1634,15 +1665,11 @@ impl cosmic::Application for CosmicConnect {
 
 struct PollState {
     backend: Option<KdeConnectBackend>,
-    next_discovery: tokio::time::Instant,
 }
 
 impl PollState {
     fn new() -> Self {
-        Self {
-            backend: None,
-            next_discovery: tokio::time::Instant::now() + Duration::from_secs(30),
-        }
+        Self { backend: None }
     }
 
     async fn poll(&mut self) -> Result<(Vec<Device>, Vec<String>), String> {
@@ -1663,14 +1690,6 @@ impl PollState {
         for d in &devices {
             log::debug!("Poll: device '{}' (reachable={}, paired={}, state={})", d.name, d.is_reachable, d.is_paired, d.pair_state);
         }
-
-        let has_reachable = devices.iter().any(|d| d.is_reachable);
-        if !has_reachable && tokio::time::Instant::now() >= self.next_discovery {
-            backend.force_discovery().await;
-            self.next_discovery = tokio::time::Instant::now() + Duration::from_secs(30);
-            log::info!("Auto-discovery triggered — no reachable devices");
-        }
-
         Ok((devices, pairing))
     }
 }
