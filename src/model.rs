@@ -121,6 +121,31 @@ pub enum ActionType {
     SelectPlayer(String),
 }
 
+impl ActionType {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Ring => "Ring",
+            Self::Ping => "Ping",
+            Self::SendClipboard => "Clipboard",
+            Self::SendClipboardText(_) => "Clipboard text",
+            Self::ShareText(_) => "Text",
+            Self::ShareUrl(_) => "URL",
+            Self::SendFile(_) => "File",
+            Self::BrowseFiles => "Browse files",
+            Self::Pair => "Pair",
+            Self::AcceptPairing => "Accept pairing",
+            Self::CancelPairing => "Cancel pairing",
+            Self::Unpair => "Unpair",
+            Self::ReplyToConversation(..) => "Reply",
+            Self::SendSms(..) => "SMS",
+            Self::DismissNotification(_) => "Dismiss notification",
+            Self::ReplyToNotification(..) => "Reply to notification",
+            Self::MediaAction(_) => "Media action",
+            Self::SelectPlayer(_) => "Select player",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Notification {
     pub id: String,

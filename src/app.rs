@@ -1057,39 +1057,45 @@ impl cosmic::Application for CosmicConnect {
                 let backend = self.backend.clone();
 
                 let draft = self.draft_mut(&device_id);
+                let action_label = draft.last_action.as_ref().map(|a| a.label()).unwrap_or("Action").to_string();
                 let fname = draft.last_action.as_ref()
                     .and_then(|a| if let ActionType::SendFile(p) = a { Some(p.clone()) } else { None })
                     .and_then(|p| p.rsplit('/').next().map(|s| s.to_string()))
                     .unwrap_or_default();
-                let was_send_file = draft.last_action.is_some()
-                    && matches!(draft.last_action, Some(ActionType::SendFile(_)));
                 draft.last_action = None;
                 draft.status = Some(match &result {
                     Ok(message) => message.clone(),
                     Err(error) => error.clone(),
                 });
 
-                if was_send_file {
-                    let notif_msg = match &result {
-                        Ok(_) => format!("{fname} sent successfully"),
-                        Err(e) => format!("{fname} failed: {e}"),
-                    };
-                    return Task::perform(
-                        async move {
-                            if let Some(backend) = backend {
-                                let _ = backend.notify(
-                                    &format!("Sent to {device_name}"),
-                                    &notif_msg,
-                                    0,
-                                ).await;
-                            }
-                        },
-                        |_| Message::RefreshDevices,
-                    ).map(cosmic::Action::App);
-                }
-
-                return Task::perform(async {}, |_| Message::RefreshDevices)
-                    .map(cosmic::Action::App);
+                let notif_msg = match &result {
+                    Ok(_) => {
+                        if fname.is_empty() {
+                            format!("{action_label} sent successfully")
+                        } else {
+                            format!("{fname} sent successfully")
+                        }
+                    }
+                    Err(e) => {
+                        if fname.is_empty() {
+                            format!("{action_label} failed: {e}")
+                        } else {
+                            format!("{fname} failed: {e}")
+                        }
+                    }
+                };
+                return Task::perform(
+                    async move {
+                        if let Some(backend) = backend {
+                            let _ = backend.notify(
+                                &format!("{device_name}"),
+                                &notif_msg,
+                                0,
+                            ).await;
+                        }
+                    },
+                    |_| Message::RefreshDevices,
+                ).map(cosmic::Action::App);
             }
             Message::RefreshConversations(device_id) => {
                 let Some(backend) = self.backend.clone() else {
