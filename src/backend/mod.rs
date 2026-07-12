@@ -530,7 +530,7 @@ impl KdeConnectBackend {
         Ok(())
     }
 
-    pub async fn notify(&self, title: &str, body: &str, replaces_id: u32) -> Result<u32> {
+    pub async fn notify(&self, title: &str, body: &str, replaces_id: u32, actions: &[&str]) -> Result<u32> {
         let proxy = Proxy::new(
             &self.conn,
             "org.freedesktop.Notifications",
@@ -538,13 +538,15 @@ impl KdeConnectBackend {
             "org.freedesktop.Notifications",
         ).await?;
 
+        let actions_vec: Vec<String> = actions.iter().map(|s| s.to_string()).collect();
+
         let notif_id: u32 = proxy.call("Notify", &(
             "COSMIC Connect",
             replaces_id,
             "io.github.acemythos.Connect-symbolic",
             title,
             body,
-            Vec::<String>::new(),
+            actions_vec,
             HashMap::<String, zvariant::Value>::new(),
             -1i32,
         )).await?;

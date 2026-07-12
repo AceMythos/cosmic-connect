@@ -61,6 +61,7 @@ pub struct CosmicConnect {
     active_notifs: HashMap<String, u32>,
     last_notif_pct: HashMap<String, i32>,
     notified_pair_ids: HashSet<String>,
+    pairing_notifs: HashMap<u32, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +108,7 @@ pub enum Message {
     TransferFinished(String, String, String),
     TransferFailed(String, String, i32, String),
     NotifCreated(String, u32),
+    NotifAction(u32, String),
     ReceivedFilesViewed(String),
     NoOp,
 }
@@ -935,15 +937,23 @@ impl cosmic::Application for CosmicConnect {
                             .unwrap_or_else(|| "Unknown device".into());
                         if let Some(backend) = self.backend.clone() {
                             let name = dev_name;
+                            let did = pid.clone();
                             tasks = tasks.chain(Task::perform(
                                 async move {
-                                    let _ = backend.notify(
+                                    backend.notify(
                                         "Pairing request",
                                         &format!("{name} wants to pair"),
                                         0,
-                                    ).await;
+                                        &["accept", "Accept", "reject", "Reject"],
+                                    ).await.ok()
                                 },
-                                |_| Message::NoOp,
+                                move |notif_id| {
+                                    if let Some(id) = notif_id {
+                                        Message::NotifCreated(did, id)
+                                    } else {
+                                        Message::NoOp
+                                    }
+                                },
                             ).map(cosmic::Action::App));
                         }
                     }
@@ -1147,6 +1157,7 @@ impl cosmic::Application for CosmicConnect {
                                 &format!("{device_name}"),
                                 &notif_msg,
                                 0,
+                                &[],
                             ).await;
                         }
                     },
@@ -1293,7 +1304,7 @@ impl cosmic::Application for CosmicConnect {
                     let Some(backend) = self.backend.clone() else { return Task::none() };
                     return Task::perform(
                         async move {
-                            let _ = backend.notify("Transfer in progress", &format!("{percent}%"), notif_id).await;
+                            let _ = backend.notify("Transfer in progress", &format!("{percent}%"), notif_id, &[]).await;
                         },
                         |_| Message::NoOp,
                     ).map(cosmic::Action::App);
@@ -1302,7 +1313,7 @@ impl cosmic::Application for CosmicConnect {
                     let tid = transfer_id.clone();
                     return Task::perform(
                         async move {
-                            backend.notify("Receiving file", &format!("{percent}%"), 0).await.ok()
+                            backend.notify("Receiving file", &format!("{percent}%"), 0, &[]).await.ok()
                         },
                         move |notif_id| {
                             if let Some(id) = notif_id {
@@ -1362,6 +1373,7 @@ impl cosmic::Application for CosmicConnect {
                             &format!("File received from {device_name}"),
                             &format!("{notif_name} → {dest_path}"),
                             notif_id,
+                            &[],
                         ).await;
                     },
                     |_| Message::NoOp,
@@ -1378,7 +1390,7 @@ impl cosmic::Application for CosmicConnect {
                 let Some(backend) = self.backend.clone() else { return Task::none() };
                 return Task::perform(
                     async move {
-                        let _ = backend.notify("Transfer failed", &error_string, notif_id).await;
+                        let _ = backend.notify("Transfer failed", &error_string, notif_id, &[]).await;
                     },
                     |_| Message::NoOp,
                 ).map(cosmic::Action::App);
@@ -1426,6 +1438,7 @@ impl cosmic::Application for CosmicConnect {
                             &format!("File received from {device_name}"),
                             &format!("{notif_name} → {notif_path}"),
                             0,
+                            &[],
                         ).await;
                     },
                     |_| Message::NoOp,
@@ -1438,8 +1451,29 @@ impl cosmic::Application for CosmicConnect {
                     }
                 }
             }
-            Message::NotifCreated(transfer_id, notif_id) => {
-                self.active_notifs.insert(transfer_id, notif_id);
+            Message::NotifCreated(key, notif_id) => {
+                if key.contains(':') {
+                    self.active_notifs.insert(key, notif_id);
+                } else {
+                    self.pairing_notifs.insert(notif_id, key);
+                }
+            }
+            Message::NotifAction(notif_id, action_key) => {
+                if let Some(device_id) = self.pairing_notifs.remove(&notif_id) {
+                    self.notified_pair_ids.remove(&device_id);
+                    if let Some(backend) = self.backend.clone() {
+                        return Task::perform(
+                            async move {
+                                match action_key.as_str() {
+                                    "accept" => backend.accept_pairing(&device_id).await,
+                                    "reject" => backend.cancel_pairing(&device_id).await,
+                                    _ => {}
+                                }
+                            },
+                            |_| Message::RefreshDevices,
+                        ).map(cosmic::Action::App);
+                    }
+                }
             }
             Message::NoOp => {}
             Message::ToggleExpand(id) => {
@@ -1683,7 +1717,15 @@ impl cosmic::Application for CosmicConnect {
                 Some((msg, state))
             });
 
-            futures_util::stream::select(poll, signals)
+            let notif_actions = unfold(NotificationActionState::new(), |mut state| async {
+                let msg = state.next().await;
+                Some((msg, state))
+            });
+
+            futures_util::stream::select(
+                futures_util::stream::select(poll, signals),
+                notif_actions,
+            )
         })
     }
 }
@@ -1827,6 +1869,66 @@ impl ShareSignalState {
                 }
                 None => {
                     log::info!("Signal stream ended, reconnecting");
+                    self.stream = None;
+                }
+            }
+        }
+    }
+}
+
+struct NotificationActionState {
+    stream: Option<MessageStream>,
+}
+
+impl NotificationActionState {
+    fn new() -> Self {
+        Self { stream: None }
+    }
+
+    async fn next(&mut self) -> Message {
+        loop {
+            if self.stream.is_none() {
+                match zbus::Connection::session().await {
+                    Ok(conn) => {
+                        let rule = MatchRule::builder()
+                            .msg_type(zbus::message::Type::Signal)
+                            .interface("org.freedesktop.Notifications")
+                            .unwrap()
+                            .member("ActionInvoked")
+                            .unwrap()
+                            .build();
+                        match MessageStream::for_match_rule(rule, &conn, None).await {
+                            Ok(stream) => {
+                                self.stream = Some(stream);
+                            }
+                            Err(e) => {
+                                log::warn!("Notification action stream setup failed: {e}, retrying in 5s");
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("D-Bus connection failed: {e}, retrying in 5s");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                }
+            }
+
+            match self.stream.as_mut().unwrap().next().await {
+                Some(Ok(msg)) => {
+                    let body: Result<(u32, String), _> = msg.body().deserialize();
+                    if let Ok((notif_id, action_key)) = body {
+                        return Message::NotifAction(notif_id, action_key);
+                    }
+                }
+                Some(Err(e)) => {
+                    log::warn!("Notification action stream error: {e}");
+                    continue;
+                }
+                None => {
+                    log::info!("Notification action stream ended, reconnecting");
                     self.stream = None;
                 }
             }
