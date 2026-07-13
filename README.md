@@ -141,6 +141,24 @@ Outputs device list. Useful for checking if KDE Connect is reachable over D-Bus.
 
 **Entry** (`src/main.rs`): Runs the COSMIC applet loop.
 
+## Comparison to other COSMIC KDE Connect applets
+
+Several projects integrate KDE Connect with the COSMIC desktop. Here is how they approach the problem:
+
+| Project | Approach | Depends on | Progress D-Bus signals | Notification suppression | SMS thread merging |
+|---|---|---|---|---|---|
+| **cosmic-connect** (this) | D-Bus wrapper | Stock KDE Connect daemon | ✅ (patched fork) | ✅ (patched fork) | ❌ |
+| [cosmic-ext-connected](https://github.com/nwxnw/cosmic-ext-connected) | D-Bus wrapper | Stock KDE Connect daemon | ❌ | ❌ (documents dupes as known issue) | ✅ |
+| [cosmic-utils/kdeconnect](https://github.com/cosmic-utils/kdeconnect) | Native Rust reimplementation | None (own daemon) | ❌ | N/A (no stock daemon) | ❌ |
+| [olafkfreund/cosmic-ext-connect](https://github.com/olafkfreund/cosmic-ext-connect-desktop-app) | Native Rust + Android app | Own protocol (CConnect) | ❌ | N/A (own daemon) | ❌ |
+
+**cosmic-connect** and **cosmic-ext-connected** both wrap the stock KDE Connect daemon over D-Bus. The main differences:
+
+- **Patched daemon** — cosmic-connect's [fork](#patched-kde-connect-fork) adds D-Bus signals for transfer progress and suppresses native notifications, giving a unified UI without duplicates. cosmic-ext-connected documents "you may see duplicate notifications" as a known issue.
+- **SMS merging** — cosmic-ext-connected detects iOS reaction-over-SMS split threads and merges them automatically.
+
+**cosmic-utils/kdeconnect** and **olafkfreund/cosmic-ext-connect** are full protocol reimplementations in Rust. They do not need the stock KDE Connect daemon at all, but require significantly more code (protocol stack, encryption, discovery, pairing, their own daemon). cosmic-connect is a thin ~2k-line D-Bus client that reuses the battle-tested KDE Connect C++ daemon.
+
 ## Known issues
 
 - Transfer progress and native notification suppression require the [patched KDE Connect fork](#patched-kde-connect-fork)
