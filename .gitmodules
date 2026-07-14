@@ -1,0 +1,4 @@
+[submodule "vendor/kdeconnect-fork"]
+	path = vendor/kdeconnect-fork
+	url = https://github.com/AceMythos/kdeconnect-fork.git
+	branch = v23.08.5-patched
