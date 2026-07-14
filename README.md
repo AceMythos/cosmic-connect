@@ -40,40 +40,26 @@ All actions run through D-Bus to the KDE Connect daemon. No direct device connec
 - libcosmic (from pop-os/libcosmic)
 - Linux with D-Bus
 - wl-paste (for reading clipboard contents on Wayland)
-- Stock KDE Connect packages (`kdeconnect` or `kdeconnect-kde`)
-- Optional: [Patched KDE Connect fork](#patched-kde-connect-fork) for transfer progress display and native notification suppression
+- Build dependencies: `cmake extra-cmake-modules libkf5kio-dev libkf5notifications-dev libkf5dbusaddons-dev libkf5config-dev libkf5coreaddons-dev libkf5i18n-dev qtbase5-dev qttools5-dev`
 
-## Building
-
-```bash
-cargo build --release
-```
-
-The applet discovers itself via the `.desktop` file and appears in the panel automatically after install.
-
-## Patched KDE Connect fork
-
-The applet works with stock KDE Connect for basic pairing, clipboard, file sharing, and notifications. Two optional patches add **live transfer progress** and **suppress duplicate native notifications**.
-
-Install the stock `kdeconnect` package first (for libraries and dependencies), then build from source:
+## Install
 
 ```bash
-# System dependencies
-sudo apt build-dep kdeconnect
-sudo apt install cmake extra-cmake-modules libkf5kio-dev libkf5notifications-dev \
-                 libkf5dbusaddons-dev libkf5config-dev libkf5coreaddons-dev \
-                 libkf5i18n-dev qtbase5-dev qttools5-dev
-
-# Build and install patched KDE Connect
-git clone -b v23.08.5-patched https://github.com/AceMythos/kdeconnect-fork.git
-cd kdeconnect-fork
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr
-make -j$(nproc)
-sudo make install
+git clone https://github.com/AceMythos/cosmic-connect
+cd cosmic-connect
+make install
 ```
 
-This replaces the system `kdeconnectd` and plugins with three patches on top of v23.08.5.
+Then add **COSMIC Connect** to your panel via COSMIC Settings → Desktop → Panel.
+
+To update later:
+```bash
+cd cosmic-connect
+git pull
+make install
+```
+
+The Makefile clones the [patched fork](https://github.com/AceMythos/kdeconnect-fork/tree/v23.08.5-patched) and installs it automatically. The patches add:
 
 ### 1. Transfer progress D-Bus signals
 
@@ -147,7 +133,7 @@ Several projects integrate KDE Connect with the COSMIC desktop. Here is how they
 
 | Project | Approach | Depends on | Progress D-Bus signals | Notification suppression | SMS thread merging |
 |---|---|---|---|---|---|
-| **cosmic-connect** (this) | D-Bus wrapper | Stock KDE Connect daemon | ✅ (patched fork) | ✅ (patched fork) | ❌ |
+| **cosmic-connect** (this) | D-Bus wrapper | Patched KDE Connect fork (built-in) | ✅ | ✅ | ❌ |
 | [cosmic-ext-connected](https://github.com/nwxnw/cosmic-ext-connected) | D-Bus wrapper | Stock KDE Connect daemon | ❌ | ❌ (documents dupes as known issue) | ✅ |
 | [cosmic-utils/kdeconnect](https://github.com/cosmic-utils/kdeconnect) | Native Rust reimplementation | None (own daemon) | ❌ | N/A (no stock daemon) | ❌ |
 | [olafkfreund/cosmic-ext-connect](https://github.com/olafkfreund/cosmic-ext-connect-desktop-app) | Native Rust + Android app | Own protocol (CConnect) | ❌ | N/A (own daemon) | ❌ |
@@ -161,7 +147,7 @@ Several projects integrate KDE Connect with the COSMIC desktop. Here is how they
 
 ## Known issues
 
-- Transfer progress and native notification suppression require the [patched KDE Connect fork](#patched-kde-connect-fork)
+- Transfer progress and native notification suppression require the [patched KDE Connect fork](#install) (built automatically by `make install`)
 - File chooser requires libcosmic built with `cosmic::dialog` feature
 - Wayland-only (uses wl-paste)
 - No SMS/conversation UI yet
