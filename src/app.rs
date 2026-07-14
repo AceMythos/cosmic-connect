@@ -105,6 +105,7 @@ pub enum Message {
     ToggleShare(String),
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
     FileReceived(String, String),
+    ClipboardReceived(String, String),
     PingReceived(String),
     TransferStarted(String, String, String, u64),
     TransferProgress(String, String, u64, u64, i32),
@@ -1466,6 +1467,30 @@ impl cosmic::Application for CosmicConnect {
                     ).map(cosmic::Action::App);
                 }
             }
+            Message::ClipboardReceived(device_id, content) => {
+                let device_name = self.devices.iter()
+                    .find(|d| d.id == device_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| device_id.clone());
+                let preview = if content.len() > 80 {
+                    format!("{}...", &content[..80])
+                } else {
+                    content.clone()
+                };
+                if let Some(backend) = self.backend.clone() {
+                    return Task::perform(
+                        async move {
+                            let _ = backend.notify(
+                                &format!("Clipboard from {device_name}"),
+                                &preview,
+                                0,
+                                &[],
+                            ).await;
+                        },
+                        |_| Message::NoOp,
+                    ).map(cosmic::Action::App);
+                }
+            }
             Message::ReceivedFilesViewed(device_id) => {
                 if let Some(files) = self.received_files.get_mut(&device_id) {
                     for file in files.iter_mut() {
@@ -1914,6 +1939,11 @@ impl ShareSignalState {
                         }
                         "pingReceived" => {
                             return Message::PingReceived(device_id);
+                        }
+                        "clipboardReceived" => {
+                            if let Ok(content) = msg.body().deserialize::<String>() {
+                                return Message::ClipboardReceived(device_id, content);
+                            }
                         }
                         _ => {}
                     }
