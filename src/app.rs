@@ -60,6 +60,8 @@ pub struct CosmicConnect {
     received_files: HashMap<String, Vec<ReceivedFile>>,
     active_notifs: HashMap<String, u32>,
     last_notif_pct: HashMap<String, i32>,
+    pending_notif_requests: HashSet<String>,
+    deferred_notifs: HashMap<String, (String, String, String)>,
     notified_pair_ids: HashSet<String>,
     pairing_notifs: HashMap<u32, String>,
 }
@@ -103,6 +105,7 @@ pub enum Message {
     ToggleShare(String),
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
     FileReceived(String, String),
+    PingReceived(String),
     TransferStarted(String, String, String, u64),
     TransferProgress(String, String, u64, u64, i32),
     TransferFinished(String, String, String),
@@ -1290,34 +1293,45 @@ impl cosmic::Application for CosmicConnect {
                 self.received_files.entry(device_id).or_default().push(rf);
             }
             Message::TransferProgress(device_id, transfer_id, _transferred, _total, percent) => {
+                let nkey = format!("transfer:{transfer_id}");
                 let files = self.received_files.get_mut(&device_id);
                 if let Some(files) = files {
                 if let Some(rf) = files.iter_mut().find(|f| f.transfer_id == transfer_id) {
                     rf.progress = percent.clamp(0, 100) as u32;
                     }
                 }
-                let prev = self.last_notif_pct.get(&transfer_id).copied().unwrap_or(-5);
+                let prev = self.last_notif_pct.get(&nkey).copied().unwrap_or(-5);
                 let pct_block = (percent / 5) * 5;
                 if pct_block <= prev { return Task::none(); }
-                self.last_notif_pct.insert(transfer_id.clone(), pct_block);
-                if let Some(&notif_id) = self.active_notifs.get(&transfer_id) {
+                self.last_notif_pct.insert(nkey.clone(), pct_block);
+                if let Some(&notif_id) = self.active_notifs.get(&nkey) {
                     let Some(backend) = self.backend.clone() else { return Task::none() };
+                    let nk = nkey.clone();
                     return Task::perform(
                         async move {
-                            let _ = backend.notify("Transfer in progress", &format!("{percent}%"), notif_id, &[]).await;
+                            backend.notify("Transfer in progress", &format!("{percent}%"), notif_id, &[]).await.ok()
                         },
-                        |_| Message::NoOp,
+                        move |new_id| {
+                            if let Some(id) = new_id {
+                                Message::NotifCreated(nk, id)
+                            } else {
+                                Message::NoOp
+                            }
+                        },
                     ).map(cosmic::Action::App);
+                } else if self.pending_notif_requests.contains(&nkey) {
+                    return Task::none();
                 } else {
+                    self.pending_notif_requests.insert(nkey.clone());
                     let Some(backend) = self.backend.clone() else { return Task::none() };
-                    let tid = transfer_id.clone();
+                    let nk = nkey.clone();
                     return Task::perform(
                         async move {
                             backend.notify("Receiving file", &format!("{percent}%"), 0, &[]).await.ok()
                         },
                         move |notif_id| {
                             if let Some(id) = notif_id {
-                                Message::NotifCreated(tid, id)
+                                Message::NotifCreated(nk, id)
                             } else {
                                 Message::NoOp
                             }
@@ -1326,6 +1340,7 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::TransferFinished(device_id, transfer_id, file_path) => {
+                let nkey = format!("transfer:{transfer_id}");
                 let file_name = file_path.rsplit('/').next()
                     .unwrap_or(&file_path)
                     .to_string();
@@ -1363,30 +1378,39 @@ impl cosmic::Application for CosmicConnect {
                     files.remove(0);
                 }
 
-                let notif_id = self.active_notifs.remove(&transfer_id).unwrap_or(0);
+                let notif_id = self.active_notifs.remove(&nkey).unwrap_or(0);
+                self.pending_notif_requests.remove(&nkey);
+                self.last_notif_pct.remove(&nkey);
                 let dest_path = file_path.trim_start_matches("file://").to_string();
-                let backend = self.backend.clone();
-                return Task::perform(
-                    async move {
-                        let Some(backend) = backend else { return };
-                        let _ = backend.notify(
-                            &format!("File received from {device_name}"),
-                            &format!("{notif_name} → {dest_path}"),
-                            notif_id,
-                            &[],
-                        ).await;
-                    },
-                    |_| Message::NoOp,
-                ).map(cosmic::Action::App);
+                if notif_id == 0 {
+                    self.deferred_notifs.insert(nkey, (device_name, notif_name, dest_path));
+                } else {
+                    let backend = self.backend.clone();
+                    return Task::perform(
+                        async move {
+                            let Some(backend) = backend else { return };
+                            let _ = backend.notify(
+                                &format!("File received from {device_name}"),
+                                &format!("{notif_name} → {dest_path}"),
+                                notif_id,
+                                &[],
+                            ).await;
+                        },
+                        |_| Message::NoOp,
+                    ).map(cosmic::Action::App);
+                }
             }
             Message::TransferFailed(device_id, transfer_id, _error_code, error_string) => {
+                let nkey = format!("transfer:{transfer_id}");
                 log::warn!("Transfer {transfer_id} failed: {error_string}");
                 if let Some(files) = self.received_files.get_mut(&device_id) {
                     if let Some(rf) = files.iter_mut().find(|f| f.transfer_id == transfer_id) {
                         rf.active = false;
                     }
                 }
-                let notif_id = self.active_notifs.remove(&transfer_id).unwrap_or(0);
+                let notif_id = self.active_notifs.remove(&nkey).unwrap_or(0);
+                self.pending_notif_requests.remove(&nkey);
+                self.last_notif_pct.remove(&nkey);
                 let Some(backend) = self.backend.clone() else { return Task::none() };
                 return Task::perform(
                     async move {
@@ -1399,13 +1423,6 @@ impl cosmic::Application for CosmicConnect {
                 let file_name = file_path.rsplit('/').next()
                     .unwrap_or(&file_path)
                     .to_string();
-                let notif_name = file_name.clone();
-                let notif_path = file_path.clone();
-
-                let device_name = self.devices.iter()
-                    .find(|d| d.id == device_id)
-                    .map(|d| d.name.clone())
-                    .unwrap_or_default();
 
                 let rf = ReceivedFile {
                     device_id: device_id.clone(),
@@ -1421,7 +1438,7 @@ impl cosmic::Application for CosmicConnect {
 
                 let files = self.received_files.entry(device_id).or_default();
 
-                if files.iter().any(|f| f.file_path == notif_path && !f.file_path.is_empty()) {
+                if files.iter().any(|f| f.file_path == file_path && !f.file_path.is_empty()) {
                     return Task::none();
                 }
 
@@ -1429,20 +1446,25 @@ impl cosmic::Application for CosmicConnect {
                 if files.len() > MAX_RECEIVED_HISTORY {
                     files.remove(0);
                 }
-
-                let backend = self.backend.clone();
-                return Task::perform(
-                    async move {
-                        let Some(backend) = backend else { return };
-                        let _ = backend.notify(
-                            &format!("File received from {device_name}"),
-                            &format!("{notif_name} → {notif_path}"),
-                            0,
-                            &[],
-                        ).await;
-                    },
-                    |_| Message::NoOp,
-                ).map(cosmic::Action::App);
+            }
+            Message::PingReceived(device_id) => {
+                let device_name = self.devices.iter()
+                    .find(|d| d.id == device_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| device_id.clone());
+                if let Some(backend) = self.backend.clone() {
+                    return Task::perform(
+                        async move {
+                            let _ = backend.notify(
+                                &format!("Ping from {device_name}"),
+                                "Your device sent a ping!",
+                                0,
+                                &[],
+                            ).await;
+                        },
+                        |_| Message::NoOp,
+                    ).map(cosmic::Action::App);
+                }
             }
             Message::ReceivedFilesViewed(device_id) => {
                 if let Some(files) = self.received_files.get_mut(&device_id) {
@@ -1452,8 +1474,25 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::NotifCreated(key, notif_id) => {
+                self.pending_notif_requests.remove(&key);
                 if key.contains(':') {
-                    self.active_notifs.insert(key, notif_id);
+                    if let Some((device_name, notif_name, dest_path)) = self.deferred_notifs.remove(&key) {
+                        if let Some(backend) = self.backend.clone() {
+                            return Task::perform(
+                                async move {
+                                    let _ = backend.notify(
+                                        &format!("File received from {device_name}"),
+                                        &format!("{notif_name} → {dest_path}"),
+                                        notif_id,
+                                        &[],
+                                    ).await;
+                                },
+                                |_| Message::NoOp,
+                            ).map(cosmic::Action::App);
+                        }
+                    } else {
+                        self.active_notifs.insert(key, notif_id);
+                    }
                 } else {
                     self.pairing_notifs.insert(notif_id, key);
                 }
@@ -1775,11 +1814,17 @@ impl ShareSignalState {
             if self.stream.is_none() {
                 match zbus::Connection::session().await {
                     Ok(conn) => {
-                        let rule = MatchRule::builder()
+                        let rule = match MatchRule::builder()
                             .msg_type(zbus::message::Type::Signal)
-                            .interface("org.kde.kdeconnect.device.share")
-                            .unwrap()
-                            .build();
+                            .path_namespace("/modules/kdeconnect/devices")
+                        {
+                            Ok(r) => r.build(),
+                            Err(e) => {
+                                log::warn!("MatchRule build failed: {e}, retrying in 5s");
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        };
                         match MessageStream::for_match_rule(rule, &conn, None).await {
                             Ok(stream) => {
                                 self.stream = Some(stream);
@@ -1806,9 +1851,16 @@ impl ShareSignalState {
                         Some(p) => p,
                         None => continue,
                     };
-                    let device_id = match path
+                    let path_str = path.as_str();
+                    let device_id = match path_str
                         .strip_prefix("/modules/kdeconnect/devices/")
-                        .and_then(|s| s.strip_suffix("/share"))
+                        .and_then(|s| {
+                            if s.ends_with("/share") || s.ends_with("/ping") {
+                                s.strip_suffix("/share").or_else(|| s.strip_suffix("/ping"))
+                            } else {
+                                None
+                            }
+                        })
                     {
                         Some(id) => id.to_string(),
                         None => continue,
@@ -1859,6 +1911,9 @@ impl ShareSignalState {
                                     device_id, transfer_id, code, error_str,
                                 );
                             }
+                        }
+                        "pingReceived" => {
+                            return Message::PingReceived(device_id);
                         }
                         _ => {}
                     }
