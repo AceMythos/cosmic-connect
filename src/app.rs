@@ -252,7 +252,7 @@ impl CosmicConnect {
 
         if device.is_reachable && device.has_plugin("kdeconnect_findmyphone") {
             buttons.push(crate::widgets::quick_action_btn(
-                "bell-symbolic",
+                "notification-alert-symbolic",
                 "Ring",
                 Message::PerformAction(device.id.clone(), ActionType::Ring),
                 false,
