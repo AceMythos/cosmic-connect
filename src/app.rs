@@ -1404,22 +1404,6 @@ impl cosmic::Application for CosmicConnect {
             .into(),
         );
 
-        if let Some(last) = self.last_sync {
-            let secs = last.elapsed().as_secs();
-            let label: String = if secs < 3 {
-                "Updated just now".into()
-            } else if secs < 60 {
-                format!("Updated {}s ago", secs)
-            } else {
-                format!("Updated {}m ago", secs / 60)
-            };
-            content.push(
-                container(text::caption(label).size(10))
-                    .padding([0, 14, 8, 14])
-                    .into(),
-            );
-        }
-
         content.push(divider::horizontal::default().into());
 
         if let Some(err) = &self.error {
@@ -1457,6 +1441,22 @@ impl cosmic::Application for CosmicConnect {
             let device_id = &device.id;
             if let Some(draft) = self.drafts.get(device_id) {
                 content.push(self.render_device_status_card(device));
+
+                if let Some(last) = self.last_sync {
+                    let secs = last.elapsed().as_secs();
+                    let label: String = if secs < 3 {
+                        "Updated just now".into()
+                    } else if secs < 60 {
+                        format!("Updated {}s ago", secs)
+                    } else {
+                        format!("Updated {}m ago", secs / 60)
+                    };
+                    content.push(
+                        container(text::caption(label).size(10))
+                            .padding([2, 14, 8, 14])
+                            .into(),
+                    );
+                }
 
                 if device.is_reachable {
                     if let Some(qa) = self.render_quick_action_row(device) {

@@ -79,7 +79,7 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                 ..Default::default()
             }
         }))
-        .padding([10, 12])
+        .padding([12, 14])
         .width(Length::Fill);
 
         let card_element: Element<'a, Message> = if selected {
@@ -247,7 +247,7 @@ pub fn status_card<'a, Message: Clone + 'static>(
         text::body(dot).size(10),
         text::caption(status_text).size(11),
     ]
-    .spacing(6)
+    .spacing(10)
     .align_y(Alignment::Center);
 
     if let Some((_icon, charge)) = battery {
@@ -263,7 +263,12 @@ pub fn status_card<'a, Message: Clone + 'static>(
 
     if let Some((net_type, _strength)) = network {
         status_row = status_row.push(
-            text::caption(format!("{}", net_type)).size(11),
+            iced::widget::row![
+                icon::from_name("network-wireless-symbolic").size(11),
+                text::caption(format!("{}", net_type)).size(11),
+            ]
+            .spacing(3)
+            .align_y(Alignment::Center),
         );
     }
 
@@ -466,11 +471,11 @@ pub fn quick_action_btn<'a, Message: Clone + 'static>(
             icon_color: Some(icon_color),
             ..button::Style::new()
         }),
-        hovered: Box::new(|_focused, _theme| button::Style {
+        hovered: Box::new(move |_focused, _theme| button::Style {
             background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.04))),
             border_radius: 10.0.into(),
-            border_width: 0.0,
-            border_color: Color::TRANSPARENT,
+            border_width: 1.0,
+            border_color: if is_active { Color::from_rgb8(0x4D, 0x8D, 0xFF) } else { Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08) },
             text_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
             icon_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
             ..button::Style::new()
@@ -504,15 +509,11 @@ pub fn disclosure_row<'a, Message: Clone + 'static>(
     is_open: bool,
     message: Message,
 ) -> Element<'a, Message> {
-    let chevron = if is_open {
-        "pan-down-symbolic"
-    } else {
-        "pan-end-symbolic"
-    };
+    let chevron = if is_open { "⌄" } else { "▸" };
 
     button::custom(
         iced::widget::row![
-            icon::from_name(chevron).size(14),
+            text::body(chevron).size(14),
             text::caption(label).size(12),
         ]
         .spacing(8)
