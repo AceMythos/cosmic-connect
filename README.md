@@ -21,16 +21,8 @@ All actions run through D-Bus to the KDE Connect daemon. No direct device connec
 ## Screenshots
 
 <p align="center">
-  <a href="screenshots/full.jpeg">
-    <img src="screenshots/full.jpeg" width="250">
-  </a>
-
-  <a href="screenshots/connected.jpeg">
-    <img src="screenshots/connected.jpeg" width="250">
-  </a>
-
-  <a href="screenshots/compact.jpeg">
-    <img src="screenshots/compact.jpeg" width="250">
+  <a href="screenshots/popup.jpeg">
+    <img src="screenshots/popup.jpeg" width="250">
   </a>
 </p>
 
