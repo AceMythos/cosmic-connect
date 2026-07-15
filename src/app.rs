@@ -1573,7 +1573,7 @@ impl cosmic::Application for CosmicConnect {
 
         content.push(
             container(self.render_device_selector())
-                .padding([4, 0, 0, 0])
+                .padding([4, 14, 0, 14])
                 .into(),
         );
 

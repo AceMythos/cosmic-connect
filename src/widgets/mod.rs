@@ -36,19 +36,19 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
 
         let label_elem: Element<'a, Message> = if selected {
             iced::widget::row![
-                icon::from_name("object-select-symbolic").size(12),
-                text::body(label).size(13),
+                icon::from_name("object-select-symbolic").size(10),
+                text::body(label).size(10),
             ]
             .spacing(4)
             .align_y(Alignment::Center)
             .into()
         } else {
-            text::body(label).size(13).into()
+            text::body(label).size(10).into()
         };
 
         let inner = iced_container(
             iced::widget::row![
-                icon::from_name(icon_name).size(18),
+                icon::from_name(icon_name).size(16),
                 iced::widget::column![
                     label_elem,
                     text::caption(sub).size(10),
@@ -80,30 +80,14 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
             }
         }))
         .clip(true)
-        .padding([8, 10])
+        .padding([6, 8])
         .width(Length::Fill);
 
-        let card_element: Element<'a, Message> = if selected {
-            let strip = iced_container(iced::widget::row![])
-                .width(Length::Fixed(3.0))
-                .height(Length::Fill)
-                .class(theme::Container::custom(|_theme| iced_container::Style {
-                    background: Some(Background::Color(Color::from_rgb8(0x4D, 0x8D, 0xFF))),
-                    ..Default::default()
-                }));
-            iced::widget::row![strip, inner]
-                .spacing(0)
-                .align_y(Alignment::Center)
-                .into()
-        } else {
-            Element::from(inner)
-        };
-
         if selected || on_select.is_none() {
-            card_element
+            Element::from(inner)
         } else {
             let msg = on_select.clone().unwrap();
-            let btn = button::custom(card_element)
+            let btn = button::custom(Element::from(inner))
                 .on_press(msg)
                 .class(theme::Button::Custom {
                     active: Box::new(|_focused, _theme| button::Style {
