@@ -37,13 +37,13 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
         let label_elem: Element<'a, Message> = if selected {
             iced::widget::row![
                 icon::from_name("object-select-symbolic").size(12),
-                text::body(label).size(14),
+                text::body(label).size(13),
             ]
             .spacing(4)
             .align_y(Alignment::Center)
             .into()
         } else {
-            text::body(label).size(14).into()
+            text::body(label).size(13).into()
         };
 
         let inner = iced_container(
@@ -51,7 +51,7 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                 icon::from_name(icon_name).size(18),
                 iced::widget::column![
                     label_elem,
-                    text::caption(sub).size(11),
+                    text::caption(sub).size(10),
                 ]
                 .spacing(1)
                 .align_x(Alignment::Center),
@@ -80,7 +80,7 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
             }
         }))
         .clip(true)
-        .padding([12, 12])
+        .padding([8, 10])
         .width(Length::Fill);
 
         let card_element: Element<'a, Message> = if selected {
