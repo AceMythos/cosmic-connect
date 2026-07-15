@@ -56,7 +56,7 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                 .spacing(1)
                 .align_x(Alignment::Center),
             ]
-            .spacing(8)
+            .spacing(6)
             .align_y(Alignment::Center),
         )
         .class(theme::Container::custom(move |_theme| {
@@ -79,7 +79,8 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                 ..Default::default()
             }
         }))
-        .padding([12, 14])
+        .clip(true)
+        .padding([12, 12])
         .width(Length::Fill);
 
         let card_element: Element<'a, Message> = if selected {
