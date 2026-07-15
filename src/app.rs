@@ -96,6 +96,7 @@ pub enum Message {
     NotifyReplyChanged(String, String),
     SendNotifyReply(String, String),
     DismissNotification(String, String),
+    DismissAllNotifications(String),
     RefreshPlayer(String),
     PlayerInfoUpdated(String, Option<PlayerInfo>),
     MediaAction(String, String),
@@ -323,14 +324,175 @@ impl CosmicConnect {
             ));
         }
 
-        if let Some(notif) = draft.notifications.first() {
-            return Some(crate::widgets::info_banner(
-                &notif.app_name,
-                &notif.text,
-            ));
+        None
+    }
+
+    fn render_notification_section<'a>(&'a self, device: &'a Device, draft: &'a DeviceDraft) -> Option<Element<'a, Message>> {
+        let notif = draft.notifications.first()?;
+
+        let mut children: Vec<Element<Message>> = Vec::new();
+        children.push(crate::widgets::section_header("Notification").into());
+
+        let row_content: Element<'a, Message> = row![
+            icon::from_name("dialog-information-symbolic").size(18),
+            column![
+                text::body(&notif.app_name).size(14),
+                text::caption(&notif.text).size(11),
+            ]
+            .spacing(1),
+            container(row![]).width(Length::Fill),
+            {
+                let dismiss_btn: Element<'a, Message> = if notif.dismissable {
+                    button::custom(icon::from_name("window-close-symbolic").size(12))
+                        .on_press(Message::DismissNotification(device.id.clone(), notif.internal_id.clone()))
+                        .padding([4, 4])
+                        .width(Length::Shrink)
+                        .class(theme::Button::Custom {
+                            active: Box::new(|_focused, _theme| button::Style {
+                                background: None,
+                                border_radius: 4.0.into(),
+                                border_width: 0.0,
+                                border_color: Color::TRANSPARENT,
+                                text_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                                icon_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                                ..button::Style::new()
+                            }),
+                            hovered: Box::new(|_focused, _theme| button::Style {
+                                background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08))),
+                                border_radius: 4.0.into(),
+                                border_width: 0.0,
+                                border_color: Color::TRANSPARENT,
+                                text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
+                                icon_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
+                                ..button::Style::new()
+                            }),
+                            pressed: Box::new(|_focused, _theme| button::Style {
+                                background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.12))),
+                                border_radius: 4.0.into(),
+                                border_width: 0.0,
+                                border_color: Color::TRANSPARENT,
+                                text_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                                icon_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                                ..button::Style::new()
+                            }),
+                            disabled: Box::new(|_theme| button::Style {
+                                background: None,
+                                border_radius: 4.0.into(),
+                                border_width: 0.0,
+                                border_color: Color::TRANSPARENT,
+                                ..button::Style::new()
+                            }),
+                        })
+                        .into()
+                } else {
+                    row![].into()
+                };
+                dismiss_btn
+            },
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into();
+
+        children.push(
+            button::custom(row_content)
+                .on_press(Message::SelectNotification(device.id.clone(), notif.internal_id.clone()))
+                .class(theme::Button::Custom {
+                    active: Box::new(|_focused, _theme| button::Style {
+                        background: None,
+                        border_radius: 8.0.into(),
+                        border_width: 0.0,
+                        border_color: Color::TRANSPARENT,
+                        text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
+                        icon_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                        ..button::Style::new()
+                    }),
+                    hovered: Box::new(|_focused, _theme| button::Style {
+                        background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.04))),
+                        border_radius: 8.0.into(),
+                        border_width: 0.0,
+                        border_color: Color::TRANSPARENT,
+                        text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
+                        icon_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                        ..button::Style::new()
+                    }),
+                    pressed: Box::new(|_focused, _theme| button::Style {
+                        background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08))),
+                        border_radius: 8.0.into(),
+                        border_width: 0.0,
+                        border_color: Color::TRANSPARENT,
+                        text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
+                        icon_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                        ..button::Style::new()
+                    }),
+                    disabled: Box::new(|_theme| button::Style {
+                        background: None,
+                        border_radius: 8.0.into(),
+                        border_width: 0.0,
+                        border_color: Color::TRANSPARENT,
+                        text_color: Some(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.4)),
+                        icon_color: Some(Color::from_rgba8(0xB7, 0xB7, 0xB7, 0.4)),
+                        ..button::Style::new()
+                    }),
+                })
+                .padding([12, 14])
+                .width(Length::Fill)
+                .into(),
+        );
+
+        if draft.notifications.len() > 1 {
+            children.push(
+                container(
+                    row![
+                        container(row![]).width(Length::Fill),
+                        button::custom(text::caption("Clear All").size(11))
+                            .on_press(Message::DismissAllNotifications(device.id.clone()))
+                            .padding([4, 8])
+                            .class(theme::Button::Custom {
+                                active: Box::new(|_focused, _theme| button::Style {
+                                    background: None,
+                                    border_radius: 4.0.into(),
+                                    border_width: 0.0,
+                                    border_color: Color::TRANSPARENT,
+                                    text_color: Some(Color::from_rgba8(0xB7, 0xB7, 0xB7, 0.6)),
+                                    ..button::Style::new()
+                                }),
+                                hovered: Box::new(|_focused, _theme| button::Style {
+                                    background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.04))),
+                                    border_radius: 4.0.into(),
+                                    border_width: 0.0,
+                                    border_color: Color::TRANSPARENT,
+                                    text_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                                    ..button::Style::new()
+                                }),
+                                pressed: Box::new(|_focused, _theme| button::Style {
+                                    background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08))),
+                                    border_radius: 4.0.into(),
+                                    border_width: 0.0,
+                                    border_color: Color::TRANSPARENT,
+                                    text_color: Some(Color::from_rgb8(0xB7, 0xB7, 0xB7)),
+                                    ..button::Style::new()
+                                }),
+                                disabled: Box::new(|_theme| button::Style {
+                                    background: None,
+                                    border_radius: 4.0.into(),
+                                    border_width: 0.0,
+                                    border_color: Color::TRANSPARENT,
+                                    ..button::Style::new()
+                                }),
+                            })
+                            .width(Length::Shrink),
+                    ]
+                    .spacing(0)
+                    .align_y(Alignment::Center),
+                )
+                .padding([2, 14, 0, 14])
+                .width(Length::Fill)
+                .into(),
+            );
         }
 
-        None
+        Some(column::with_children(children).spacing(0).into())
     }
 
     fn render_clipboard_row(&self, device: &Device) -> Element<'_, Message> {
@@ -1048,6 +1210,21 @@ impl cosmic::Application for CosmicConnect {
                 )
                 .map(cosmic::Action::App);
             }
+            Message::DismissAllNotifications(device_id) => {
+                let backend = self.backend.clone();
+                let notifs = self.draft_mut(&device_id).notifications.clone();
+                self.draft_mut(&device_id).notifications.clear();
+                let Some(backend) = backend else { return Task::none() };
+                return Task::perform(
+                    async move {
+                        for n in notifs {
+                            backend.dismiss_notification(&device_id, &n.internal_id).await;
+                        }
+                    },
+                    |_| Message::NoOp,
+                )
+                .map(cosmic::Action::App);
+            }
             Message::RefreshPlayer(device_id) => {
                 let Some(backend) = self.backend.clone() else { return Task::none(); };
                 let did = device_id.clone();
@@ -1394,7 +1571,11 @@ impl cosmic::Application for CosmicConnect {
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
         let mut content: Vec<Element<Message>> = Vec::new();
 
-        content.push(self.render_device_selector().into());
+        content.push(
+            container(self.render_device_selector())
+                .padding([4, 0, 0, 0])
+                .into(),
+        );
 
         let is_discovering = self.is_discovering || self.auto_discovering;
         content.push(
@@ -1475,7 +1656,11 @@ impl cosmic::Application for CosmicConnect {
                     }
 
                     if let Some(banner) = self.render_info_banner(device, draft) {
-                        content.push(container(banner).padding([4, 0, 12, 0]).into());
+                        content.push(container(banner).padding([12, 0, 12, 0]).into());
+                    }
+
+                    if let Some(notif_section) = self.render_notification_section(device, draft) {
+                        content.push(container(notif_section).padding([12, 0, 12, 0]).into());
                     }
 
                     content.push(divider::horizontal::default().into());
