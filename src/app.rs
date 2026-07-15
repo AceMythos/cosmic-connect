@@ -1587,12 +1587,9 @@ impl cosmic::Application for CosmicConnect {
         );
     }
 
-    let coated = container(content)
-        .style(glass_coating_style);
-
     let btn = self.core
         .applet
-        .button_from_element(coated, true)
+        .button_from_element(content, true)
         .width(Length::Shrink)
         .on_press_down(Message::TogglePopup);
 
@@ -1757,24 +1754,6 @@ impl cosmic::Application for CosmicConnect {
                 notif_actions,
             )
         })
-    }
-}
-
-fn glass_coating_style(theme: &cosmic::Theme) -> iced_container::Style {
-    let cosmic = theme.cosmic();
-    iced_container::Style {
-        background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.50))),
-        border: Border {
-            radius: cosmic.radius_m().into(),
-            width: 1.0,
-            color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.10),
-        },
-        shadow: Shadow {
-            color: Color::from_rgba8(0x00, 0x00, 0x00, 0.30),
-            offset: Vector::new(0.0, 4.0),
-            blur_radius: 12.0,
-        },
-        ..Default::default()
     }
 }
 
