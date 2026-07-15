@@ -23,11 +23,6 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
         selected: bool,
         on_select: &Option<Message>,
     ) -> Element<'a, Message> {
-        let bg = if selected {
-            Background::Color(Color::from_rgba8(0x2B, 0x2B, 0x2B, 0.85))
-        } else {
-            Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))
-        };
         let border_color = if selected {
             Color::from_rgb8(0x4D, 0x8D, 0xFF)
         } else {
@@ -59,7 +54,21 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
             .spacing(6)
             .align_y(Alignment::Center),
         )
-        .class(theme::Container::custom(move |_theme| {
+        .class(theme::Container::custom(move |theme| {
+            let frosted = theme.cosmic().is_frosted;
+            let bg = if selected {
+                if frosted {
+                    Background::Color(Color::from_rgba8(0x2B, 0x2B, 0x2B, 0.85))
+                } else {
+                    Background::Color(Color::from_rgb8(0x2B, 0x2B, 0x2B))
+                }
+            } else {
+                if frosted {
+                    Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))
+                } else {
+                    Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+                }
+            };
             iced_container::Style {
                 background: Some(bg),
                 border: Border {
@@ -147,17 +156,6 @@ pub fn pill_button<'a, Message: Clone + 'static>(
     message: Message,
     active: bool,
 ) -> Element<'a, Message> {
-        let (bg, border) = if active {
-            (
-                Background::Color(Color::from_rgba8(0x2B, 0x2B, 0x2B, 0.85)),
-                Color::from_rgb8(0x4D, 0x8D, 0xFF),
-            )
-        } else {
-            (
-                Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80)),
-                Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08),
-            )
-        };
 
     let text_color = if active {
         Color::from_rgb8(0x4D, 0x8D, 0xFF)
@@ -175,14 +173,36 @@ pub fn pill_button<'a, Message: Clone + 'static>(
     )
     .on_press(message)
     .class(theme::Button::Custom {
-        active: Box::new(move |_focused, _theme| button::Style {
-            background: Some(bg),
-            border_radius: 18.0.into(),
-            border_width: if active { 1.0 } else { 0.0 },
-            border_color: border,
-            text_color: Some(text_color),
-            icon_color: Some(text_color),
-            ..button::Style::new()
+        active: Box::new(move |_focused, theme| {
+            let frosted = theme.cosmic().is_frosted;
+            let (bg, border) = if active {
+                (
+                    if frosted {
+                        Background::Color(Color::from_rgba8(0x2B, 0x2B, 0x2B, 0.85))
+                    } else {
+                        Background::Color(Color::from_rgb8(0x2B, 0x2B, 0x2B))
+                    },
+                    Color::from_rgb8(0x4D, 0x8D, 0xFF),
+                )
+            } else {
+                (
+                    if frosted {
+                        Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))
+                    } else {
+                        Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+                    },
+                    Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08),
+                )
+            };
+            button::Style {
+                background: Some(bg),
+                border_radius: 18.0.into(),
+                border_width: if active { 1.0 } else { 0.0 },
+                border_color: border,
+                text_color: Some(text_color),
+                icon_color: Some(text_color),
+                ..button::Style::new()
+            }
         }),
         hovered: Box::new(|_focused, _theme| button::Style {
             background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.06))),
@@ -202,14 +222,21 @@ pub fn pill_button<'a, Message: Clone + 'static>(
             icon_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
             ..button::Style::new()
         }),
-        disabled: Box::new(|_theme| button::Style {
-            background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))),
-            border_radius: 18.0.into(),
-            border_width: 0.0,
-            border_color: Color::TRANSPARENT,
-            text_color: Some(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.4)),
-            icon_color: Some(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.4)),
-            ..button::Style::new()
+        disabled: Box::new(|theme| {
+            let frosted = theme.cosmic().is_frosted;
+            button::Style {
+                background: Some(if frosted {
+                    Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))
+                } else {
+                    Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+                }),
+                border_radius: 18.0.into(),
+                border_width: 0.0,
+                border_color: Color::TRANSPARENT,
+                text_color: Some(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.4)),
+                icon_color: Some(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.4)),
+                ..button::Style::new()
+            }
         }),
     })
     .padding([6, 16])
@@ -272,19 +299,26 @@ pub fn status_card<'a, Message: Clone + 'static>(
     }
 
         let card = iced_container(header)
-        .class(theme::Container::custom(|_theme| iced_container::Style {
-            background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))),
-            border: Border {
-                radius: 12.0.into(),
-                width: 1.0,
-                color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08),
-            },
-            shadow: Shadow {
-                color: Color::from_rgba8(0x00, 0x00, 0x00, 0.20),
-                offset: Vector::new(0.0, 2.0),
-                blur_radius: 8.0,
-            },
-            ..Default::default()
+        .class(theme::Container::custom(|theme| {
+            let frosted = theme.cosmic().is_frosted;
+            iced_container::Style {
+                background: Some(if frosted {
+                    Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))
+                } else {
+                    Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+                }),
+                border: Border {
+                    radius: 12.0.into(),
+                    width: 1.0,
+                    color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08),
+                },
+                shadow: Shadow {
+                    color: Color::from_rgba8(0x00, 0x00, 0x00, 0.20),
+                    offset: Vector::new(0.0, 2.0),
+                    blur_radius: 8.0,
+                },
+                ..Default::default()
+            }
         }))
         .padding([12, 14])
         .width(Length::Fill);
@@ -345,14 +379,21 @@ pub fn info_banner<'a, Message: 'static>(
         .spacing(10)
         .align_y(Alignment::Center),
     )
-    .class(theme::Container::custom(|_theme| iced_container::Style {
-        background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.75))),
-        border: Border {
-            radius: 10.0.into(),
-            width: 1.0,
-            color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08),
-        },
-        ..Default::default()
+    .class(theme::Container::custom(|theme| {
+        let frosted = theme.cosmic().is_frosted;
+        iced_container::Style {
+            background: Some(if frosted {
+                Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.75))
+            } else {
+                Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+            }),
+            border: Border {
+                radius: 10.0.into(),
+                width: 1.0,
+                color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08),
+            },
+            ..Default::default()
+        }
     }))
     .padding([10, 14])
     .width(Length::Fill)

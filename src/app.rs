@@ -1763,8 +1763,13 @@ impl cosmic::Application for CosmicConnect {
 
 fn glass_coating_style(theme: &cosmic::Theme) -> iced_container::Style {
     let cosmic = theme.cosmic();
+    let bg = if cosmic.is_frosted {
+        Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.40))
+    } else {
+        Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+    };
     iced_container::Style {
-        background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.40))),
+        background: Some(bg),
         border: Border {
             radius: cosmic.radius_m().into(),
             width: 1.0,
@@ -1779,9 +1784,15 @@ fn glass_coating_style(theme: &cosmic::Theme) -> iced_container::Style {
     }
 }
 
-fn glass_card(_theme: &cosmic::Theme) -> iced_container::Style {
+fn glass_card(theme: &cosmic::Theme) -> iced_container::Style {
+    let ct = theme.cosmic();
+    let bg = if ct.is_frosted {
+        Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))
+    } else {
+        Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+    };
     iced_container::Style {
-        background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))),
+        background: Some(bg),
         border: Border {
             radius: 8.0.into(),
             width: 1.0,
@@ -1793,13 +1804,18 @@ fn glass_card(_theme: &cosmic::Theme) -> iced_container::Style {
 
 pub fn popup_style(theme: &cosmic::Theme) -> iced_container::Style {
     let cosmic = theme.cosmic();
-    iced_container::Style {
-        background: Some(Background::Gradient(Gradient::Linear(
+    let bg = if cosmic.is_frosted {
+        Background::Gradient(Gradient::Linear(
             gradient::Linear::new(std::f32::consts::PI)
                 .add_stop(0.0, Color::from_rgba8(0x1E, 0x1E, 0x2A, 0.70))
                 .add_stop(0.5, Color::from_rgba8(0x25, 0x25, 0x28, 0.85))
                 .add_stop(1.0, Color::from_rgba8(0x27, 0x27, 0x27, 0.92)),
-        ))),
+        ))
+    } else {
+        Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
+    };
+    iced_container::Style {
+        background: Some(bg),
         text_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
         border: Border {
             radius: cosmic.radius_m().into(),
