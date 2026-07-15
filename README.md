@@ -20,21 +20,16 @@ All actions run through D-Bus to the KDE Connect daemon. No direct device connec
 
 ## Screenshots
 
-<p align="center">
-  <figure>
-    <a href="screenshots/panel.jpeg">
-      <img src="screenshots/panel.jpeg" width="250">
-    </a>
-    <figcaption>Applet in the panel</figcaption>
-  </figure>
-
-  <figure>
-    <a href="screenshots/popup.jpeg">
-      <img src="screenshots/popup.jpeg" width="250">
-    </a>
-    <figcaption>Popup with device controls</figcaption>
-  </figure>
-</p>
+<table>
+  <tr>
+    <td><b>Applet in the panel</b></td>
+    <td><b>Popup with device controls</b></td>
+  </tr>
+  <tr>
+    <td><a href="screenshots/panel.jpeg"><img src="screenshots/panel.jpeg" width="250"></a></td>
+    <td><a href="screenshots/popup.jpeg"><img src="screenshots/popup.jpeg" width="250"></a></td>
+  </tr>
+</table>
 
 ## Requirements
 
