@@ -21,6 +21,10 @@ All actions run through D-Bus to the KDE Connect daemon. No direct device connec
 ## Screenshots
 
 <p align="center">
+  <a href="screenshots/panel.jpeg">
+    <img src="screenshots/panel.jpeg" width="250">
+  </a>
+
   <a href="screenshots/popup.jpeg">
     <img src="screenshots/popup.jpeg" width="250">
   </a>
