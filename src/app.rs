@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ashpd::desktop::file_chooser::SelectedFiles;
 use cosmic::app::Core;
@@ -116,6 +116,17 @@ pub enum Message {
     NoOp,
 }
 
+fn charging_anim(charge: i32) -> String {
+    let frame = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() / 600 % 2;
+    match frame {
+        0 => format!("{}%+", charge),
+        _ => format!("{}%⚡", charge),
+    }
+}
+
 fn signal_bars(strength: i32) -> &'static str {
     match strength.clamp(0, 4) {
         0 => "○",
@@ -142,7 +153,7 @@ impl CosmicConnect {
         if let Some(device) = self.devices.iter().find(|d| d.is_reachable) {
             let net = self.drafts.get(&device.id).and_then(|d| d.connectivity.as_ref());
             if let Some(bat) = &device.battery {
-                let charge_label = if bat.is_charging { format!("{}%+", bat.charge) } else { format!("{}%", bat.charge) };
+                let charge_label = if bat.is_charging { charging_anim(bat.charge) } else { format!("{}%", bat.charge) };
                 if let Some(conn) = net {
                     format!("{} - ({}) {}", device.name, charge_label, signal_bars(conn.signal_strength))
                 } else {
@@ -205,14 +216,14 @@ impl CosmicConnect {
 
     fn render_device_status_card<'a>(&'a self, device: &'a Device) -> Element<'a, Message> {
         let draft = self.drafts.get(&device.id);
-        let net = draft.and_then(|d| d.connectivity.as_ref());
+        let _net = draft.and_then(|d| d.connectivity.as_ref());
         let battery = device.battery.as_ref().map(|b| (if b.is_charging { "charging" } else { "" }, b.charge));
 
         crate::widgets::status_card(
             device.name.as_str(),
             device.is_reachable,
             battery,
-            net.map(|n| (n.network_type.as_str(), n.signal_strength)),
+            None,
             if !device.is_reachable { None } else { Some(Message::ToggleAdvanced(device.id.clone())) },
         )
     }

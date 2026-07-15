@@ -232,7 +232,7 @@ pub fn status_card<'a, Message: Clone + 'static>(
     name: &'a str,
     connected: bool,
     battery: Option<(&'a str, i32)>,
-    network: Option<(&'a str, i32)>,
+    _network: Option<(&'a str, i32)>,
     on_toggle: Option<Message>,
 ) -> Element<'a, Message> {
     let dot = if connected { "●" } else { "○" };
@@ -258,17 +258,6 @@ pub fn status_card<'a, Message: Clone + 'static>(
         };
         status_row = status_row.push(
             text::caption(format!("🔋 {}%", charge)).size(11).class(charge_color),
-        );
-    }
-
-    if let Some((net_type, _strength)) = network {
-        status_row = status_row.push(
-            iced::widget::row![
-                icon::from_name("network-wireless-symbolic").size(11),
-                text::caption(format!("{}", net_type)).size(11),
-            ]
-            .spacing(3)
-            .align_y(Alignment::Center),
         );
     }
 
