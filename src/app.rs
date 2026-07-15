@@ -1588,7 +1588,7 @@ impl cosmic::Application for CosmicConnect {
     }
 
     let coated = container(content)
-        .padding(0)
+        .padding([5, 8, 0, 8])
         .style(glass_coating_style);
 
     let btn = self.core
