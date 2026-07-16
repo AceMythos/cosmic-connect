@@ -1,21 +1,35 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ashpd::desktop::file_chooser::SelectedFiles;
+use cosmic::anim;
 use cosmic::app::Core;
 use cosmic::iced::core::Alignment;
 use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
+use cosmic::iced::time;
 use cosmic::iced::window::Id;
 use cosmic::iced::gradient;
 use cosmic::iced::{Background, Border, Color, Gradient, Length, Limits, Shadow, Subscription, Vector};
 use cosmic::widget::text_input;
+use cosmic::widget::autosize::autosize;
 use cosmic::widget::{
     button, column, container, divider, icon, progress_bar, row, scrollable, text,
 };
 use cosmic::widget::container as iced_container;
 use cosmic::theme;
 use cosmic::{Action, Element, Task};
+
+use crate::widgets::{
+    card_default,
+    COLOR_BG_CARD_FROSTED, COLOR_BG_COATING_FROSTED,
+    COLOR_BG_HOVER, COLOR_BG_PRESSED,
+    COLOR_BORDER_GLASS, COLOR_TEXT_PRIMARY, COLOR_TEXT_HOVER, COLOR_TEXT_DISABLED, COLOR_TEXT_DIM,
+    COLOR_SHADOW_PANEL,
+    RADIUS_MD, RADIUS_SM,
+    SIZE_BODY, SIZE_CAPTION,
+};
 use futures_util::stream::unfold;
 use futures_util::StreamExt;
 use zbus::{MatchRule, MessageStream};
@@ -26,6 +40,9 @@ use crate::model::{ActionType, ConnectivityInfo, ConversationMessage, Device, De
 const ID: &str = "io.github.acemythos.Connect";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_RECEIVED_HISTORY: usize = 50;
+
+static POPUP_AUTOSIZE_ID: LazyLock<cosmic::widget::Id> =
+    LazyLock::new(|| cosmic::widget::Id::new("cosmic-connect-popup"));
 
 #[derive(Default)]
 struct DeviceDraft {
@@ -43,6 +60,7 @@ struct DeviceDraft {
     player: Option<PlayerInfo>,
     connectivity: Option<ConnectivityInfo>,
     last_action: Option<ActionType>,
+    anim_state: anim::State,
 }
 
 #[derive(Default)]
@@ -337,48 +355,48 @@ impl CosmicConnect {
         let row_content: Element<'a, Message> = row![
             icon::from_name("dialog-information-symbolic").size(18),
             column![
-                text::body(&notif.app_name).size(14),
-                text::caption(&notif.text).size(11),
+                text::body(&notif.app_name).size(SIZE_BODY),
+                text::caption(&notif.text).size(SIZE_CAPTION),
             ]
             .spacing(1),
             container(row![]).width(Length::Fill),
             {
                 let dismiss_btn: Element<'a, Message> = if notif.dismissable {
-                    button::custom(icon::from_name("window-close-symbolic").size(12))
+                    button::custom(icon::from_name("window-close-symbolic").size(SIZE_CAPTION))
                         .on_press(Message::DismissNotification(device.id.clone(), notif.internal_id.clone()))
                         .padding([4, 4])
                         .width(Length::Shrink)
                         .class(theme::Button::Custom {
                             active: Box::new(|_focused, _theme| button::Style {
                                 background: None,
-                                border_radius: 4.0.into(),
+                                border_radius: RADIUS_SM.into(),
                                 border_width: 0.0,
                                 border_color: Color::TRANSPARENT,
-                                text_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
-                                icon_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
+                                text_color: Some(COLOR_TEXT_PRIMARY),
+                                icon_color: Some(COLOR_TEXT_PRIMARY),
                                 ..button::Style::new()
                             }),
                             hovered: Box::new(|_focused, _theme| button::Style {
-                                background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.10))),
-                                border_radius: 4.0.into(),
+                                background: Some(Background::Color(COLOR_BG_PRESSED)),
+                                border_radius: RADIUS_SM.into(),
                                 border_width: 0.0,
                                 border_color: Color::TRANSPARENT,
-                                text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
-                                icon_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
+                                text_color: Some(COLOR_TEXT_HOVER),
+                                icon_color: Some(COLOR_TEXT_HOVER),
                                 ..button::Style::new()
                             }),
                             pressed: Box::new(|_focused, _theme| button::Style {
                                 background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.12))),
-                                border_radius: 4.0.into(),
+                                border_radius: RADIUS_SM.into(),
                                 border_width: 0.0,
                                 border_color: Color::TRANSPARENT,
-                                text_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
-                                icon_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
+                                text_color: Some(COLOR_TEXT_PRIMARY),
+                                icon_color: Some(COLOR_TEXT_PRIMARY),
                                 ..button::Style::new()
                             }),
                             disabled: Box::new(|_theme| button::Style {
                                 background: None,
-                                border_radius: 4.0.into(),
+                                border_radius: RADIUS_SM.into(),
                                 border_width: 0.0,
                                 border_color: Color::TRANSPARENT,
                                 ..button::Style::new()
@@ -404,26 +422,26 @@ impl CosmicConnect {
                         border_radius: 8.0.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
-                        text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
-                        icon_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
+                        text_color: Some(COLOR_TEXT_HOVER),
+                        icon_color: Some(COLOR_TEXT_PRIMARY),
                         ..button::Style::new()
                     }),
                     hovered: Box::new(|_focused, _theme| button::Style {
-                        background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.06))),
+                        background: Some(Background::Color(COLOR_BG_HOVER)),
                         border_radius: 8.0.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
-                        text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
-                        icon_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
+                        text_color: Some(COLOR_TEXT_HOVER),
+                        icon_color: Some(COLOR_TEXT_PRIMARY),
                         ..button::Style::new()
                     }),
                     pressed: Box::new(|_focused, _theme| button::Style {
-                        background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.10))),
+                        background: Some(Background::Color(COLOR_BG_PRESSED)),
                         border_radius: 8.0.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
-                        text_color: Some(Color::from_rgb8(0xFF, 0xFF, 0xFF)),
-                        icon_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
+                        text_color: Some(COLOR_TEXT_HOVER),
+                        icon_color: Some(COLOR_TEXT_PRIMARY),
                         ..button::Style::new()
                     }),
                     disabled: Box::new(|_theme| button::Style {
@@ -431,8 +449,8 @@ impl CosmicConnect {
                         border_radius: 8.0.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
-                        text_color: Some(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.4)),
-                        icon_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.4)),
+                        text_color: Some(COLOR_TEXT_DIM),
+                        icon_color: Some(COLOR_TEXT_DISABLED),
                         ..button::Style::new()
                     }),
                 })
@@ -446,7 +464,7 @@ impl CosmicConnect {
                 container(
                     row![
                         container(row![]).width(Length::Fill),
-                        button::custom(text::caption("Clear All").size(11))
+                        button::custom(text::caption("Clear All").size(SIZE_CAPTION))
                             .on_press(Message::DismissAllNotifications(device.id.clone()))
                             .padding([4, 8])
                             .class(theme::Button::Custom {
@@ -459,19 +477,19 @@ impl CosmicConnect {
                                     ..button::Style::new()
                                 }),
                                 hovered: Box::new(|_focused, _theme| button::Style {
-                                    background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.06))),
+                                    background: Some(Background::Color(COLOR_BG_HOVER)),
                                     border_radius: 4.0.into(),
                                     border_width: 0.0,
                                     border_color: Color::TRANSPARENT,
-                                    text_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
+                                    text_color: Some(COLOR_TEXT_PRIMARY),
                                     ..button::Style::new()
                                 }),
                                 pressed: Box::new(|_focused, _theme| button::Style {
-                                    background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.10))),
+                                    background: Some(Background::Color(COLOR_BG_PRESSED)),
                                     border_radius: 4.0.into(),
                                     border_width: 0.0,
                                     border_color: Color::TRANSPARENT,
-                                    text_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
+                                    text_color: Some(COLOR_TEXT_PRIMARY),
                                     ..button::Style::new()
                                 }),
                                 disabled: Box::new(|_theme| button::Style {
@@ -507,7 +525,7 @@ impl CosmicConnect {
     fn render_share_row(&self, device: &Device) -> Element<'_, Message> {
         crate::widgets::list_row(
             "document-send-symbolic",
-            "Share",
+            "Send File",
             Message::ChooseFile(device.id.clone()),
         )
     }
@@ -515,7 +533,7 @@ impl CosmicConnect {
     fn render_advanced_section<'a>(&'a self, device: &'a Device, draft: &'a DeviceDraft) -> Element<'a, Message> {
         if self.advanced_device.as_deref() != Some(&device.id) {
             return crate::widgets::disclosure_row(
-                "Advanced",
+                &device.name,
                 false,
                 Message::ToggleAdvanced(device.id.clone()),
             );
@@ -524,7 +542,7 @@ impl CosmicConnect {
         let mut children: Vec<Element<Message>> = Vec::new();
 
         children.push(crate::widgets::disclosure_row(
-            "Advanced",
+            &device.name,
             true,
             Message::ToggleAdvanced(device.id.clone()),
         ));
@@ -568,7 +586,7 @@ impl CosmicConnect {
                     container(
                         button::custom(
                             row![
-                                text::caption(format!("{}: {}", sender, preview)).size(12),
+                                text::caption(format!("{}: {}", sender, preview)).size(SIZE_CAPTION),
                             ]
                         )
                         .on_press(Message::SelectConversation(device.id.clone(), msg.thread_id))
@@ -621,7 +639,7 @@ impl CosmicConnect {
                         button::custom(
                             row![
                                 icon::from_name("dialog-information-symbolic").size(12),
-                                text::caption(if label.len() > 50 { format!("{}…", &label[..50]) } else { label.clone() }).size(11),
+                                text::caption(if label.len() > 50 { format!("{}…", &label[..50]) } else { label.clone() }).size(SIZE_CAPTION),
                             ]
                             .spacing(6)
                             .width(Length::Fill),
@@ -640,7 +658,7 @@ impl CosmicConnect {
                             container(
                                 button::custom(
                                     row![
-                                        icon::from_name("window-close-symbolic").size(10),
+                                        icon::from_name("window-close-symbolic").size(SIZE_CAPTION),
                                         text::caption("Dismiss"),
                                     ]
                                     .spacing(4)
@@ -680,6 +698,58 @@ impl CosmicConnect {
                     );
                 }
             }
+
+            if draft.notifications.len() > 1 {
+                children.push(
+                    container(
+                        row![
+                            container(row![]).width(Length::Fill),
+                            Element::from(
+                                button::custom(text::caption("Clear All").size(SIZE_CAPTION))
+                                    .on_press(Message::DismissAllNotifications(device.id.clone()))
+                                    .padding([4, 8])
+                                    .class(theme::Button::Custom {
+                                        active: Box::new(|_focused, _theme| button::Style {
+                                            background: None,
+                                            border_radius: 4.0.into(),
+                                            border_width: 0.0,
+                                            border_color: Color::TRANSPARENT,
+                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.6)),
+                                            ..button::Style::new()
+                                        }),
+                                        hovered: Box::new(|_focused, _theme| button::Style {
+                                            background: Some(Background::Color(COLOR_BG_HOVER)),
+                                            border_radius: 4.0.into(),
+                                            border_width: 0.0,
+                                            border_color: Color::TRANSPARENT,
+                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.9)),
+                                            ..button::Style::new()
+                                        }),
+                                        pressed: Box::new(|_focused, _theme| button::Style {
+                                            background: Some(Background::Color(COLOR_BG_PRESSED)),
+                                            border_radius: 4.0.into(),
+                                            border_width: 0.0,
+                                            border_color: Color::TRANSPARENT,
+                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.8)),
+                                            ..button::Style::new()
+                                        }),
+                                        disabled: Box::new(|_theme| button::Style {
+                                            background: None,
+                                            border_radius: 4.0.into(),
+                                            border_width: 0.0,
+                                            border_color: Color::TRANSPARENT,
+                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.25)),
+                                            ..button::Style::new()
+                                        }),
+                                    }),
+                            ),
+                        ]
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([4, 0])
+                    .into(),
+                );
+            }
         }
 
         if let Some(files) = self.received_files.get(&device.id) {
@@ -694,9 +764,9 @@ impl CosmicConnect {
                                     column![
                                         row![
                                             icon::from_name("document-save-symbolic").size(12),
-                                            text::caption(&rf.file_name).size(11),
+                                            text::caption(&rf.file_name).size(SIZE_CAPTION),
                                             container(row![]).width(Length::Fill),
-                                            text::caption(format!("{}%", rf.progress)).size(10),
+                                            text::caption(format!("{}%", rf.progress)).size(SIZE_CAPTION),
                                         ].spacing(4).align_y(Alignment::Center),
                                         progress_bar::determinate_linear(
                                             (rf.progress as f32 / 100.0).clamp(0.0, 1.0)
@@ -718,7 +788,7 @@ impl CosmicConnect {
                                 container(
                                     row![
                                         icon::from_name("document-save-symbolic").size(12),
-                                        text::caption(format!("{} → {}", rf.file_name, short_path)).size(11),
+                                        text::caption(format!("{} → {}", rf.file_name, short_path)).size(SIZE_CAPTION),
                                     ].spacing(4)
                                 )
                                 .style(glass_card)
@@ -776,7 +846,7 @@ impl CosmicConnect {
                                 else if status.contains("error") || status.contains("failed") { "dialog-error-symbolic" }
                                 else { "emblem-default-symbolic" }
                             ).size(12),
-                            text::caption(status).size(11),
+                            text::caption(status).size(SIZE_CAPTION),
                         ]
                         .spacing(6)
                         .align_y(Alignment::Center),
@@ -789,7 +859,24 @@ impl CosmicConnect {
             );
         }
 
+        let anim_progress = draft.anim_state.t(Duration::from_millis(250), true);
+        let eased = anim::smootherstep(anim_progress);
+
         container(column::with_children(children).spacing(0))
+            .style(move |_theme: &cosmic::Theme| {
+                let max_alpha = 0.80;
+                let bg_alpha = max_alpha * eased;
+                let border_alpha = 0.06 * eased;
+                iced_container::Style {
+                    background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, bg_alpha))),
+                    border: Border {
+                        radius: RADIUS_MD.into(),
+                        width: 1.0,
+                        color: Color::from_rgba8(0xFF, 0xFF, 0xFF, border_alpha),
+                    },
+                    ..Default::default()
+                }
+            })
             .padding([0, 0])
             .width(Length::Fill)
             .into()
@@ -812,24 +899,31 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
+        let window_id = core.main_window_id();
+        let blur_task = window_id
+            .map(|id| cosmic::iced::window::enable_blur::<Action<Self::Message>>(id))
+            .unwrap_or_else(Task::none);
+
         (
             Self {
                 core,
                 ..Default::default()
             },
-            Task::perform(
-                async {
-                    KdeConnectBackend::new()
-                        .await
-                        .map(Arc::new)
-                        .map_err(|e| format!("D-Bus: {e}"))
-                },
-                |result| match result {
-                    Ok(backend) => Message::BackendReady(backend),
-                    Err(error) => Message::BackendError(error),
-                },
-            )
-            .map(cosmic::Action::App),
+            blur_task.chain(
+                Task::perform(
+                    async {
+                        KdeConnectBackend::new()
+                            .await
+                            .map(Arc::new)
+                            .map_err(|e| format!("D-Bus: {e}"))
+                    },
+                    |result| match result {
+                        Ok(backend) => Message::BackendReady(backend),
+                        Err(error) => Message::BackendError(error),
+                    },
+                )
+                .map(cosmic::Action::App),
+            ),
         )
     }
 
@@ -1550,11 +1644,13 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::ToggleAdvanced(id) => {
+                let anim_id = id.clone();
                 if self.advanced_device.as_deref() == Some(&id) {
                     self.advanced_device = None;
                 } else {
                     self.advanced_device = Some(id);
                 }
+                self.draft_mut(&anim_id).anim_state.changed(Duration::from_millis(250));
             }
         }
 
@@ -1576,14 +1672,14 @@ impl cosmic::Application for CosmicConnect {
             .filter(|f| f.unread)
             .count();
 
-    let preview = text::caption(self.panel_preview()).size(12);
+    let preview = text::caption(self.panel_preview()).size(SIZE_CAPTION);
     let mut content = row![icon, preview]
         .spacing(6)
         .align_y(Alignment::Center);
 
     if unread > 0 {
         content = content.push(
-            text::caption(format!("({unread})")).size(11)
+            text::caption(format!("({unread})")).size(SIZE_CAPTION)
         );
     }
 
@@ -1631,11 +1727,18 @@ impl cosmic::Application for CosmicConnect {
         content.push(divider::horizontal::default().into());
 
         if let Some(err) = &self.error {
+            let is_backend_err = err.contains("D-Bus") || err.contains("backend");
             content.push(
                 container(
                     column![
-                        icon::from_name("dialog-warning-symbolic").size(32),
-                        text::caption(err),
+                        icon::from_name(if is_backend_err { "computer-symbolic" } else { "dialog-warning-symbolic" }).size(32),
+                        text::body(if is_backend_err { "Backend unavailable" } else { "Error" }).size(SIZE_BODY),
+                        text::caption(err).size(SIZE_CAPTION),
+                        if is_backend_err {
+                            Element::from(crate::widgets::pill_button("view-refresh-symbolic", "Retry", Message::RefreshDevices, false))
+                        } else {
+                            row![].into()
+                        },
                     ]
                     .spacing(8)
                     .align_x(Alignment::Center),
@@ -1648,13 +1751,14 @@ impl cosmic::Application for CosmicConnect {
             content.push(
                 container(
                     column![
-                        icon::from_name("phone-symbolic").size(48),
+                        icon::from_name("network-wireless-symbolic").size(48),
                         text::body("No devices found"),
                         text::caption(
-                            "Make sure KDE Connect is installed\nand a device is paired."
-                        ),
+                            "Make sure KDE Connect is installed\nand a device is on the same network."
+                        ).size(SIZE_CAPTION),
+                        crate::widgets::pill_button("view-refresh-symbolic", "Find Devices", Message::DiscoverDevices, is_discovering),
                     ]
-                    .spacing(8)
+                    .spacing(12)
                     .align_x(Alignment::Center),
                 )
                 .padding(32)
@@ -1676,35 +1780,44 @@ impl cosmic::Application for CosmicConnect {
                         format!("Updated {}m ago", secs / 60)
                     };
                     content.push(
-                        container(text::caption(label).size(10))
-                            .padding([2, 14, 8, 14])
+                        container(text::caption(label).size(SIZE_CAPTION))
+                            .padding([4, 14, 8, 14])
                             .into(),
                     );
                 }
 
                 if device.is_reachable {
                     if let Some(qa) = self.render_quick_action_row(device) {
-                        content.push(qa);
+                        content.push(container(qa).into());
                     }
 
                     if let Some(banner) = self.render_info_banner(device, draft) {
-                        content.push(container(banner).padding([12, 0, 12, 0]).into());
+                        content.push(container(banner).padding([8, 0]).into());
                     }
 
                     if let Some(notif_section) = self.render_notification_section(device, draft) {
-                        content.push(container(notif_section).padding([12, 0, 12, 0]).into());
+                        content.push(container(notif_section).padding([8, 0]).into());
                     }
 
-                    content.push(divider::horizontal::default().into());
-
-                    if device.has_plugin("kdeconnect_clipboard") {
-                        content.push(self.render_clipboard_row(device));
+                    let has_clipboard = device.has_plugin("kdeconnect_clipboard");
+                    let has_share = device.has_plugin("kdeconnect_share");
+                    if has_clipboard || has_share {
+                        let mut share_items: Vec<Element<Message>> = Vec::new();
+                        if has_clipboard {
+                            share_items.push(self.render_clipboard_row(device));
+                        }
+                        if has_share {
+                            share_items.push(self.render_share_row(device));
+                        }
+                        content.push(
+                            container(
+                                column::with_children(share_items).spacing(0),
+                            )
+                            .style(card_default)
+                            .width(Length::Fill)
+                            .into(),
+                        );
                     }
-                    if device.has_plugin("kdeconnect_share") {
-                        content.push(self.render_share_row(device));
-                    }
-
-                    content.push(divider::horizontal::default().into());
                 }
 
                 content.push(self.render_advanced_section(device, draft));
@@ -1713,19 +1826,71 @@ impl cosmic::Application for CosmicConnect {
 
         let body = column::with_children(content).spacing(0);
 
+        let edge_highlight = container(
+            row![]
+        )
+        .style(|_| iced_container::Style {
+            background: Some(Background::Gradient(Gradient::Linear(
+                gradient::Linear::new(std::f32::consts::PI)
+                    .add_stop(0.0, Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08))
+                    .add_stop(1.0, Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.0)),
+            ))),
+            ..Default::default()
+        })
+        .height(2.0)
+        .width(Length::Fill);
+
         let panel = scrollable(
-            container(body)
-                .style(popup_style)
-                .padding(26)
-                .width(Length::Fill),
+            column![
+                edge_highlight,
+                container(body)
+                    .padding(24)
+                    .width(Length::Fill),
+            ]
+            .spacing(0),
         )
         .height(Length::Shrink)
         .width(Length::Fill);
 
-        self.core
-            .applet
-            .popup_container(panel)
-            .into()
+        autosize(
+            container(panel)
+                .style(|theme: &cosmic::Theme| {
+                    let c = theme.cosmic();
+                    let bg = Background::Gradient(Gradient::Linear(
+                        gradient::Linear::new(std::f32::consts::PI)
+                            .add_stop(0.0, Color::from_rgba8(0x2E, 0x2E, 0x35, 0.72))
+                            .add_stop(0.5, Color::from_rgba8(0x25, 0x25, 0x28, 0.85))
+                            .add_stop(1.0, Color::from_rgba8(0x27, 0x27, 0x27, 0.92)),
+                    ));
+                    iced_container::Style {
+                        background: Some(bg),
+                        border: Border {
+                            radius: c.corner_radii.radius_m.into(),
+                            width: 1.0,
+                            color: c.background.divider.into(),
+                        },
+                        shadow: Shadow {
+                            color: Color::from_rgba8(0x00, 0x00, 0x00, 0.40),
+                            offset: Vector::new(0.0, 16.0),
+                            blur_radius: 40.0,
+                        },
+                        text_color: Some(c.background.on.into()),
+                        icon_color: Some(c.background.on.into()),
+                        ..Default::default()
+                    }
+                })
+                .height(Length::Shrink)
+                .width(Length::Fill),
+            POPUP_AUTOSIZE_ID.clone(),
+        )
+        .limits(
+            Limits::NONE
+                .min_height(1.)
+                .min_width(360.0)
+                .max_width(360.0)
+                .max_height(1000.0),
+        )
+        .into()
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
@@ -1733,7 +1898,7 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with(std::any::TypeId::of::<()>(), |_state| {
+        let inner = Subscription::run_with(std::any::TypeId::of::<()>(), |_state| {
             let poll = unfold(PollState::new(), |mut state| async {
                 tokio::time::sleep(POLL_INTERVAL).await;
                 let msg = match state.poll().await {
@@ -1757,26 +1922,24 @@ impl cosmic::Application for CosmicConnect {
                 futures_util::stream::select(poll, signals),
                 notif_actions,
             )
-        })
+        });
+
+        let tick = time::every(Duration::from_millis(16)).map(|_| Message::NoOp);
+
+        Subscription::batch(vec![inner, tick])
     }
 }
 
-fn glass_coating_style(theme: &cosmic::Theme) -> iced_container::Style {
-    let cosmic = theme.cosmic();
-    let bg = if cosmic.is_frosted {
-        Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.40))
-    } else {
-        Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
-    };
+fn glass_coating_style(_theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(bg),
+        background: Some(Background::Color(COLOR_BG_COATING_FROSTED)),
         border: Border {
-            radius: cosmic.radius_m().into(),
+            radius: RADIUS_MD.into(),
             width: 1.0,
-            color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.10),
+            color: COLOR_BG_PRESSED,
         },
         shadow: Shadow {
-            color: Color::from_rgba8(0x00, 0x00, 0x00, 0.30),
+            color: COLOR_SHADOW_PANEL,
             offset: Vector::new(0.0, 4.0),
             blur_radius: 12.0,
         },
@@ -1784,48 +1947,13 @@ fn glass_coating_style(theme: &cosmic::Theme) -> iced_container::Style {
     }
 }
 
-fn glass_card(theme: &cosmic::Theme) -> iced_container::Style {
-    let ct = theme.cosmic();
-    let bg = if ct.is_frosted {
-        Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, 0.80))
-    } else {
-        Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
-    };
+fn glass_card(_theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(bg),
+        background: Some(Background::Color(COLOR_BG_CARD_FROSTED)),
         border: Border {
-            radius: 8.0.into(),
+            radius: RADIUS_MD.into(),
             width: 1.0,
-            color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.06),
-        },
-        ..Default::default()
-    }
-}
-
-pub fn popup_style(theme: &cosmic::Theme) -> iced_container::Style {
-    let cosmic = theme.cosmic();
-    let bg = if cosmic.is_frosted {
-        Background::Gradient(Gradient::Linear(
-            gradient::Linear::new(std::f32::consts::PI)
-                .add_stop(0.0, Color::from_rgba8(0x1E, 0x1E, 0x2A, 0.70))
-                .add_stop(0.5, Color::from_rgba8(0x25, 0x25, 0x28, 0.85))
-                .add_stop(1.0, Color::from_rgba8(0x27, 0x27, 0x27, 0.92)),
-        ))
-    } else {
-        Background::Color(Color::from_rgb8(0x27, 0x27, 0x27))
-    };
-    iced_container::Style {
-        background: Some(bg),
-        text_color: Some(Color::from_rgb8(0xF3, 0xF1, 0xEC)),
-        border: Border {
-            radius: cosmic.radius_m().into(),
-            width: 1.0,
-            color: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.12),
-        },
-        shadow: Shadow {
-            color: Color::from_rgba8(0x00, 0x00, 0x00, 0.40),
-            offset: Vector::new(0.0, 16.0),
-            blur_radius: 40.0,
+            color: COLOR_BORDER_GLASS,
         },
         ..Default::default()
     }
