@@ -34,6 +34,8 @@ All actions go through D-Bus to the KDE Connect daemon. You still need KDE Conne
 
 ## Install
 
+### Quick start (recommended)
+
 ```bash
 git clone https://github.com/AceMythos/cosmic-connect && cd cosmic-connect && make deps && make install
 ```
@@ -41,6 +43,24 @@ git clone https://github.com/AceMythos/cosmic-connect && cd cosmic-connect && ma
 `make deps` installs system packages and Rust (first time only).
 `make install` clones the patched KDE Connect fork, builds it,
 installs it system-wide, builds the applet, and restarts the daemon.
+
+### Manual install
+
+```bash
+# Install build dependencies
+sudo apt install cmake extra-cmake-modules libkf5kio-dev \
+    libkf5notifications-dev libkf5dbusaddons-dev libkf5config-dev \
+    libkf5coreaddons-dev libkf5i18n-dev qtbase5-dev qttools5-dev \
+    git build-essential wl-clipboard
+
+# Install Rust (if needed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Clone and build
+git clone https://github.com/AceMythos/cosmic-connect
+cd cosmic-connect
+make install
+```
 
 Then add COSMIC Connect to your panel: COSMIC Settings -> Desktop -> Panel.
 
