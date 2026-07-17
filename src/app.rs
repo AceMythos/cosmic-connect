@@ -2214,8 +2214,7 @@ async fn pick_file_path() -> Result<String, String> {
     response
         .uris()
         .first()
-        .and_then(|uri| uri.to_file_path().ok())
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|uri| uri.to_string())
         .ok_or_else(|| "No file selected".to_string())
 }
 
