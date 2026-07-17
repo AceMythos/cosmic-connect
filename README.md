@@ -17,7 +17,7 @@ If this saves you a click, star the repo.
   </tr>
   <tr>
     <td><a href="screenshots/panel.jpeg"><img src="screenshots/panel.jpeg" width="250"></a></td>
-    <td><a href="screenshots/popup.jpeg"><img src="screenshots/popup.jpeg" height="150" width="180"></a></td>
+    <td><a href="screenshots/popup.jpeg"><img src="screenshots/popup.jpeg" height="250" width="200"></a></td>
   </tr>
 </table>
 
