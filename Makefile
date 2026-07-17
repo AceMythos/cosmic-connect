@@ -4,35 +4,51 @@ FORK_REPO   ?= https://github.com/AceMythos/kdeconnect-fork.git
 FORK_BRANCH ?= v23.08.5-patched
 FORK_DIR    ?= build/kdeconnect-fork
 
+NOW := $(shell date +%s)
+
 install: build-fork install-fork build-applet install-applet restart-daemon
-	@echo "=== Done ==="
+	@__end=$$(date +%s); __elapsed=$$((__end - $(NOW))); \
+	__min=$$((__elapsed / 60)); __sec=$$((__elapsed % 60)); \
+	echo "=== Done ($${__min}m $${__sec}s) ==="
 
 build-fork:
-	@echo "=== Cloning/building KDE Connect fork ==="
-	@if [ ! -d "$(FORK_DIR)" ]; then \
+	@__start=$$(date +%s); \
+	echo "=== [1/4] Building KDE Connect fork (~2-3 min) ==="; \
+	if [ ! -d "$(FORK_DIR)" ]; then \
 		mkdir -p build && \
-		git clone --branch $(FORK_BRANCH) $(FORK_REPO) $(FORK_DIR); \
-	fi
-	@mkdir -p $(FORK_DIR)/build
-	cd $(FORK_DIR)/build && cmake .. -DCMAKE_INSTALL_PREFIX=/usr && make -j$$(nproc)
+		git clone --progress --branch $(FORK_BRANCH) $(FORK_REPO) $(FORK_DIR); \
+	fi; \
+	mkdir -p $(FORK_DIR)/build; \
+	cd $(FORK_DIR)/build && cmake .. -DCMAKE_INSTALL_PREFIX=/usr && make -j$$(nproc); \
+	__end=$$(date +%s); \
+	echo "  -> Done ($$((__end - __start))s)"
 
 install-fork:
-	@echo "=== Installing KDE Connect fork ==="
-	sudo cmake --install $(FORK_DIR)/build
+	@__start=$$(date +%s); \
+	echo "=== [2/4] Installing KDE Connect fork ==="; \
+	sudo cmake --install $(FORK_DIR)/build; \
+	__end=$$(date +%s); \
+	echo "  -> Done ($$((__end - __start))s)"
 
 build-applet:
-	@echo "=== Building applet ==="
-	cargo build --release
+	@__start=$$(date +%s); \
+	echo "=== [3/4] Building applet (cargo ~2 min) ==="; \
+	cargo build --release; \
+	__end=$$(date +%s); \
+	echo "  -> Done ($$((__end - __start))s)"
 
 install-applet:
-	@echo "=== Installing applet ==="
-	sudo install -m 755 target/release/cosmic-connect /usr/bin/cosmic-connect
-	sudo install -m 644 io.github.acemythos.Connect.desktop /usr/share/applications/
+	@__start=$$(date +%s); \
+	echo "=== [4/4] Installing applet ==="; \
+	sudo install -m 755 target/release/cosmic-connect /usr/bin/cosmic-connect; \
+	sudo install -m 644 io.github.acemythos.Connect.desktop /usr/share/applications/; \
+	__end=$$(date +%s); \
+	echo "  -> Done ($$((__end - __start))s)"
 
 restart-daemon:
-	@echo "=== Restarting daemon ==="
-	-sudo killall kdeconnectd 2>/dev/null || true
-	@/usr/lib/x86_64-linux-gnu/libexec/kdeconnectd &
+	@echo "=== Restarting daemon ==="; \
+	-sudo killall kdeconnectd 2>/dev/null || true; \
+	/usr/lib/x86_64-linux-gnu/libexec/kdeconnectd &
 
 update: pull-fork pull-applet install
 
