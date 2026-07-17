@@ -35,14 +35,14 @@ All actions go through D-Bus to the KDE Connect daemon. You still need KDE Conne
 ## Install
 
 ```bash
-git clone https://github.com/AceMythos/cosmic-connect
-cd cosmic-connect
-make install
+git clone https://github.com/AceMythos/cosmic-connect && cd cosmic-connect && make deps && make install
 ```
 
-`make install` clones the patched KDE Connect fork, builds it, installs it system-wide, builds the applet, and restarts the daemon. The patched fork is required for transfer progress and notification suppression.
+`make deps` installs system packages and Rust (first time only).
+`make install` clones the patched KDE Connect fork, builds it,
+installs it system-wide, builds the applet, and restarts the daemon.
 
-To add COSMIC Connect to your panel: COSMIC Settings -> Desktop -> Panel.
+Then add COSMIC Connect to your panel: COSMIC Settings -> Desktop -> Panel.
 
 To verify the patched daemon:
 ```bash

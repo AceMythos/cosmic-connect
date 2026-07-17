@@ -6,6 +6,18 @@ FORK_DIR    ?= build/kdeconnect-fork
 
 NOW := $(shell date +%s)
 
+deps:
+	@echo "=== Installing build dependencies ==="
+	sudo apt-get install -y cmake extra-cmake-modules libkf5kio-dev \
+		libkf5notifications-dev libkf5dbusaddons-dev libkf5config-dev \
+		libkf5coreaddons-dev libkf5i18n-dev qtbase5-dev qttools5-dev \
+		git build-essential wl-clipboard
+	@if ! command -v cargo >/dev/null 2>&1; then \
+		echo "=== Installing Rust ==="; \
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; \
+	fi
+	@echo "=== Dependencies ready ==="
+
 install: build-fork install-fork build-applet install-applet restart-daemon
 	@__end=$$(date +%s); __elapsed=$$((__end - $(NOW))); \
 	__min=$$((__elapsed / 60)); __sec=$$((__elapsed % 60)); \
@@ -60,4 +72,4 @@ pull-fork:
 pull-applet:
 	git pull
 
-.PHONY: install build-fork install-fork build-applet install-applet restart-daemon update pull-fork pull-applet
+.PHONY: deps install build-fork install-fork build-applet install-applet restart-daemon update pull-fork pull-applet
