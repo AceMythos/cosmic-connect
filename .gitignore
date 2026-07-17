@@ -1,2 +1,9 @@
 target/
 graphify-out/
+build/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
