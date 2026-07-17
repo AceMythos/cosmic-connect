@@ -40,7 +40,14 @@ cd cosmic-connect
 make install
 ```
 
-Then add COSMIC Connect to your panel via COSMIC Settings -> Desktop -> Panel.
+`make install` clones the patched KDE Connect fork, builds it, installs it system-wide, builds the applet, and restarts the daemon. The patched fork is required for transfer progress and notification suppression.
+
+To add COSMIC Connect to your panel: COSMIC Settings -> Desktop -> Panel.
+
+To verify the patched daemon:
+```bash
+pgrep -a kdeconnectd
+```
 
 ## Requirements
 
@@ -66,13 +73,6 @@ KDE Connect's stock D-Bus interface only emits `shareReceived` when a transfer f
 ### Native notification suppression
 
 The fork blocks KDE Connect's own desktop notifications for file transfers and pairing requests. cosmic-connect handles those inline.
-
-To verify the patched daemon:
-
-```bash
-killall kdeconnectd
-/usr/lib/x86_64-linux-gnu/libexec/kdeconnectd
-```
 
 </details>
 
