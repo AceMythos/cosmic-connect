@@ -1,5 +1,5 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange)
 
 # cosmic-connect
@@ -17,7 +17,7 @@ If this saves you a click, star the repo.
   </tr>
   <tr>
     <td><a href="screenshots/panel.jpeg"><img src="screenshots/panel.jpeg" width="250"></a></td>
-    <td><a href="screenshots/popup.jpeg"><img src="screenshots/popup.jpeg" width="250"></a></td>
+    <td><a href="screenshots/popup.jpeg"><img src="screenshots/popup.jpeg" width="150"></a></td>
   </tr>
 </table>
 
