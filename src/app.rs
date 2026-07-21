@@ -211,7 +211,7 @@ impl CosmicConnect {
         let remote_icon = remote.map(|d| d.device_type.icon_name()).unwrap_or("phone-symbolic");
         let remote_name = remote.map(|d| d.name.as_str()).unwrap_or("No device");
         let remote_sub = match remote {
-            Some(d) if d.is_reachable => "Connected (Active)",
+            Some(d) if d.is_reachable => "Connected",
             Some(d) if d.is_paired => "Offline",
             Some(_) => "Not paired",
             None => "No devices",

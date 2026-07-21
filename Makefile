@@ -52,8 +52,8 @@ build-applet:
 install-applet:
 	@__start=$$(date +%s); \
 	echo "=== [4/4] Installing applet ==="; \
-	sudo install -m 755 target/release/cosmic-connect /usr/bin/cosmic-connect; \
-	sudo install -m 644 io.github.acemythos.Connect.desktop /usr/share/applications/; \
+	pkexec install -m 755 $(CURDIR)/target/release/cosmic-connect /usr/bin/cosmic-connect; \
+	pkexec install -m 644 $(CURDIR)/io.github.acemythos.Connect.desktop /usr/share/applications/; \
 	__end=$$(date +%s); \
 	echo "  -> Done ($$((__end - __start))s)"
 
