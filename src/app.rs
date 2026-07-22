@@ -23,11 +23,14 @@ use cosmic::{Action, Element, Task};
 
 use crate::widgets::{
     card_default,
-    COLOR_BG_CARD_FROSTED, COLOR_BG_COATING_FROSTED,
-    COLOR_BG_HOVER, COLOR_BG_PRESSED,
-    COLOR_BORDER_GLASS, COLOR_TEXT_PRIMARY, COLOR_TEXT_HOVER, COLOR_TEXT_DISABLED, COLOR_TEXT_DIM,
-    COLOR_SHADOW_PANEL,
-    RADIUS_MD, RADIUS_SM,
+    frosted_bg, on_overlay,
+    COLOR_TEXT_PRIMARY, COLOR_TEXT_HOVER, COLOR_TEXT_DISABLED, COLOR_TEXT_DIM,
+    RADIUS_CARD, RADIUS_SM,
+    CARD_LUM_DARKEN,
+    OPACITY_CARD, OPACITY_COATING,
+    BORDER_GLASS_ALPHA,
+    HOVER_OVERLAY_ALPHA, PRESSED_ALPHA,
+    SHADOW_PANEL_ALPHA,
     SIZE_BODY, SIZE_CAPTION,
 };
 use futures_util::stream::unfold;
@@ -376,8 +379,8 @@ impl CosmicConnect {
                                 icon_color: Some(COLOR_TEXT_PRIMARY),
                                 ..button::Style::new()
                             }),
-                            hovered: Box::new(|_focused, _theme| button::Style {
-                                background: Some(Background::Color(COLOR_BG_PRESSED)),
+                            hovered: Box::new(|_focused, theme| button::Style {
+                                background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                                 border_radius: RADIUS_SM.into(),
                                 border_width: 0.0,
                                 border_color: Color::TRANSPARENT,
@@ -385,8 +388,8 @@ impl CosmicConnect {
                                 icon_color: Some(COLOR_TEXT_HOVER),
                                 ..button::Style::new()
                             }),
-                            pressed: Box::new(|_focused, _theme| button::Style {
-                                background: Some(Background::Color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.12))),
+                            pressed: Box::new(|_focused, theme| button::Style {
+                                background: Some(Background::Color(on_overlay(theme, 0.12))),
                                 border_radius: RADIUS_SM.into(),
                                 border_width: 0.0,
                                 border_color: Color::TRANSPARENT,
@@ -419,25 +422,25 @@ impl CosmicConnect {
                 .class(theme::Button::Custom {
                     active: Box::new(|_focused, _theme| button::Style {
                         background: None,
-                        border_radius: 8.0.into(),
+                        border_radius: RADIUS_CARD.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
                         text_color: Some(COLOR_TEXT_HOVER),
                         icon_color: Some(COLOR_TEXT_PRIMARY),
                         ..button::Style::new()
                     }),
-                    hovered: Box::new(|_focused, _theme| button::Style {
-                        background: Some(Background::Color(COLOR_BG_HOVER)),
-                        border_radius: 8.0.into(),
+                    hovered: Box::new(|_focused, theme| button::Style {
+                        background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
+                        border_radius: RADIUS_CARD.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
                         text_color: Some(COLOR_TEXT_HOVER),
                         icon_color: Some(COLOR_TEXT_PRIMARY),
                         ..button::Style::new()
                     }),
-                    pressed: Box::new(|_focused, _theme| button::Style {
-                        background: Some(Background::Color(COLOR_BG_PRESSED)),
-                        border_radius: 8.0.into(),
+                    pressed: Box::new(|_focused, theme| button::Style {
+                        background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
+                        border_radius: RADIUS_CARD.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
                         text_color: Some(COLOR_TEXT_HOVER),
@@ -446,7 +449,7 @@ impl CosmicConnect {
                     }),
                     disabled: Box::new(|_theme| button::Style {
                         background: None,
-                        border_radius: 8.0.into(),
+                        border_radius: RADIUS_CARD.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
                         text_color: Some(COLOR_TEXT_DIM),
@@ -468,24 +471,24 @@ impl CosmicConnect {
                             .on_press(Message::DismissAllNotifications(device.id.clone()))
                             .padding([4, 8])
                             .class(theme::Button::Custom {
-                                active: Box::new(|_focused, _theme| button::Style {
+                                active: Box::new(|_focused, theme| button::Style {
                                     background: None,
                                     border_radius: 4.0.into(),
                                     border_width: 0.0,
                                     border_color: Color::TRANSPARENT,
-                                    text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.6)),
+                                    text_color: Some(on_overlay(theme, 0.6)),
                                     ..button::Style::new()
                                 }),
-                                hovered: Box::new(|_focused, _theme| button::Style {
-                                    background: Some(Background::Color(COLOR_BG_HOVER)),
+                                hovered: Box::new(|_focused, theme| button::Style {
+                                    background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                                     border_radius: 4.0.into(),
                                     border_width: 0.0,
                                     border_color: Color::TRANSPARENT,
                                     text_color: Some(COLOR_TEXT_PRIMARY),
                                     ..button::Style::new()
                                 }),
-                                pressed: Box::new(|_focused, _theme| button::Style {
-                                    background: Some(Background::Color(COLOR_BG_PRESSED)),
+                                pressed: Box::new(|_focused, theme| button::Style {
+                                    background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                                     border_radius: 4.0.into(),
                                     border_width: 0.0,
                                     border_color: Color::TRANSPARENT,
@@ -709,36 +712,36 @@ impl CosmicConnect {
                                     .on_press(Message::DismissAllNotifications(device.id.clone()))
                                     .padding([4, 8])
                                     .class(theme::Button::Custom {
-                                        active: Box::new(|_focused, _theme| button::Style {
+                                        active: Box::new(|_focused, theme| button::Style {
                                             background: None,
                                             border_radius: 4.0.into(),
                                             border_width: 0.0,
                                             border_color: Color::TRANSPARENT,
-                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.6)),
+                                            text_color: Some(on_overlay(theme, 0.6)),
                                             ..button::Style::new()
                                         }),
-                                        hovered: Box::new(|_focused, _theme| button::Style {
-                                            background: Some(Background::Color(COLOR_BG_HOVER)),
+                                        hovered: Box::new(|_focused, theme| button::Style {
+                                            background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                                             border_radius: 4.0.into(),
                                             border_width: 0.0,
                                             border_color: Color::TRANSPARENT,
-                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.9)),
+                                            text_color: Some(on_overlay(theme, 0.9)),
                                             ..button::Style::new()
                                         }),
-                                        pressed: Box::new(|_focused, _theme| button::Style {
-                                            background: Some(Background::Color(COLOR_BG_PRESSED)),
+                                        pressed: Box::new(|_focused, theme| button::Style {
+                                            background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                                             border_radius: 4.0.into(),
                                             border_width: 0.0,
                                             border_color: Color::TRANSPARENT,
-                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.8)),
+                                            text_color: Some(on_overlay(theme, 0.8)),
                                             ..button::Style::new()
                                         }),
-                                        disabled: Box::new(|_theme| button::Style {
+                                        disabled: Box::new(|theme| button::Style {
                                             background: None,
                                             border_radius: 4.0.into(),
                                             border_width: 0.0,
                                             border_color: Color::TRANSPARENT,
-                                            text_color: Some(Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.25)),
+                                            text_color: Some(on_overlay(theme, 0.25)),
                                             ..button::Style::new()
                                         }),
                                     }),
@@ -863,16 +866,23 @@ impl CosmicConnect {
         let eased = anim::smootherstep(anim_progress);
 
         container(column::with_children(children).spacing(0))
-            .style(move |_theme: &cosmic::Theme| {
+            .style(move |theme: &cosmic::Theme| {
                 let max_alpha = 0.80;
                 let bg_alpha = max_alpha * eased;
-                let border_alpha = 0.06 * eased;
+                let border_alpha = BORDER_GLASS_ALPHA * eased;
+                let base: Color = theme.cosmic().background.base.into();
+                let on: Color = theme.cosmic().background.on.into();
                 iced_container::Style {
-                    background: Some(Background::Color(Color::from_rgba8(0x27, 0x27, 0x27, bg_alpha))),
+                    background: Some(Background::Color(Color::from_rgba(
+                        base.r * CARD_LUM_DARKEN,
+                        base.g * CARD_LUM_DARKEN,
+                        base.b * CARD_LUM_DARKEN,
+                        bg_alpha,
+                    ))),
                     border: Border {
-                        radius: RADIUS_MD.into(),
+                        radius: RADIUS_CARD.into(),
                         width: 1.0,
-                        color: Color::from_rgba8(0xFF, 0xFF, 0xFF, border_alpha),
+                        color: Color::from_rgba(on.r, on.g, on.b, border_alpha),
                     },
                     ..Default::default()
                 }
@@ -1829,13 +1839,16 @@ impl cosmic::Application for CosmicConnect {
         let edge_highlight = container(
             row![]
         )
-        .style(|_| iced_container::Style {
-            background: Some(Background::Gradient(Gradient::Linear(
-                gradient::Linear::new(std::f32::consts::PI)
-                    .add_stop(0.0, Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08))
-                    .add_stop(1.0, Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.0)),
-            ))),
-            ..Default::default()
+        .style(|theme: &cosmic::Theme| {
+            let on: Color = theme.cosmic().background.on.into();
+            iced_container::Style {
+                background: Some(Background::Gradient(Gradient::Linear(
+                    gradient::Linear::new(std::f32::consts::PI)
+                        .add_stop(0.0, Color::from_rgba(on.r, on.g, on.b, 0.08))
+                        .add_stop(1.0, Color::from_rgba(on.r, on.g, on.b, 0.0)),
+                ))),
+                ..Default::default()
+            }
         })
         .height(2.0)
         .width(Length::Fill);
@@ -1856,26 +1869,28 @@ impl cosmic::Application for CosmicConnect {
             container(panel)
                 .style(|theme: &cosmic::Theme| {
                     let c = theme.cosmic();
+                    let base: Color = c.background.base.into();
+                    let on: Color = c.background.on.into();
                     let bg = Background::Gradient(Gradient::Linear(
                         gradient::Linear::new(std::f32::consts::PI)
-                            .add_stop(0.0, Color::from_rgba8(0x2E, 0x2E, 0x35, 0.72))
-                            .add_stop(0.5, Color::from_rgba8(0x25, 0x25, 0x28, 0.85))
-                            .add_stop(1.0, Color::from_rgba8(0x27, 0x27, 0x27, 0.92)),
+                            .add_stop(0.0, Color::from_rgba(base.r, base.g, base.b, 0.72))
+                            .add_stop(0.5, Color::from_rgba(base.r * 0.96, base.g * 0.96, base.b * 0.96, 0.85))
+                            .add_stop(1.0, Color::from_rgba(base.r * 0.92, base.g * 0.92, base.b * 0.92, 0.92)),
                     ));
                     iced_container::Style {
                         background: Some(bg),
                         border: Border {
-                            radius: c.corner_radii.radius_m.into(),
+                            radius: RADIUS_CARD.into(),
                             width: 1.0,
-                            color: c.background.divider.into(),
+                            color: Color::from_rgba(on.r, on.g, on.b, BORDER_GLASS_ALPHA),
                         },
                         shadow: Shadow {
-                            color: Color::from_rgba8(0x00, 0x00, 0x00, 0.40),
+                            color: Color::from_rgba(0.0, 0.0, 0.0, 0.40),
                             offset: Vector::new(0.0, 16.0),
                             blur_radius: 40.0,
                         },
-                        text_color: Some(c.background.on.into()),
-                        icon_color: Some(c.background.on.into()),
+                        text_color: Some(on),
+                        icon_color: Some(on),
                         ..Default::default()
                     }
                 })
@@ -1930,16 +1945,16 @@ impl cosmic::Application for CosmicConnect {
     }
 }
 
-fn glass_coating_style(_theme: &cosmic::Theme) -> iced_container::Style {
+fn glass_coating_style(theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(Background::Color(COLOR_BG_COATING_FROSTED)),
+        background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_COATING))),
         border: Border {
-            radius: RADIUS_MD.into(),
+            radius: RADIUS_CARD.into(),
             width: 1.0,
-            color: COLOR_BG_PRESSED,
+            color: on_overlay(theme, PRESSED_ALPHA),
         },
         shadow: Shadow {
-            color: COLOR_SHADOW_PANEL,
+            color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_PANEL_ALPHA),
             offset: Vector::new(0.0, 4.0),
             blur_radius: 12.0,
         },
@@ -1947,13 +1962,13 @@ fn glass_coating_style(_theme: &cosmic::Theme) -> iced_container::Style {
     }
 }
 
-fn glass_card(_theme: &cosmic::Theme) -> iced_container::Style {
+fn glass_card(theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(Background::Color(COLOR_BG_CARD_FROSTED)),
+        background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
         border: Border {
-            radius: RADIUS_MD.into(),
+            radius: RADIUS_CARD.into(),
             width: 1.0,
-            color: COLOR_BORDER_GLASS,
+            color: on_overlay(theme, BORDER_GLASS_ALPHA),
         },
         ..Default::default()
     }

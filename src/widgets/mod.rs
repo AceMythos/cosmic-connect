@@ -14,30 +14,44 @@ pub const RADIUS_MD: f32 = 8.0;
 pub const RADIUS_LG: f32 = 12.0;
 pub const RADIUS_PILL: f32 = 18.0;
 
-// Colors
+// Colors — semantic (static)
 pub const COLOR_ACCENT: Color = Color::from_rgb8(0x4D, 0x8D, 0xFF);
 pub const COLOR_TEXT_PRIMARY: Color = Color::from_rgb8(0xF3, 0xF1, 0xEC);
 pub const COLOR_TEXT_HOVER: Color = Color::from_rgb8(0xFF, 0xFF, 0xFF);
 pub const COLOR_TEXT_DISABLED: Color = Color::from_rgba8(0xF3, 0xF1, 0xEC, 0.4);
 pub const COLOR_TEXT_DIM: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.6);
-#[allow(dead_code)]
-pub const COLOR_BG_CARD: Color = Color::from_rgb8(0x27, 0x27, 0x27);
-#[allow(dead_code)]
-pub const COLOR_BG_SELECTED: Color = Color::from_rgb8(0x2B, 0x2B, 0x2B);
-pub const COLOR_BG_CARD_FROSTED: Color = Color::from_rgba8(0x27, 0x27, 0x27, 0.80);
-pub const COLOR_BG_SELECTED_FROSTED: Color = Color::from_rgba8(0x2B, 0x2B, 0x2B, 0.85);
-pub const COLOR_BG_BANNER_FROSTED: Color = Color::from_rgba8(0x27, 0x27, 0x27, 0.75);
-pub const COLOR_BG_COATING_FROSTED: Color = Color::from_rgba8(0x27, 0x27, 0x27, 0.40);
-pub const COLOR_BG_HOVER: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.06);
-pub const COLOR_BG_PRESSED_SUBTLE: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08);
-pub const COLOR_BG_PRESSED: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.10);
-pub const COLOR_BORDER_SUBTLE: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.08);
-pub const COLOR_BORDER_GLASS: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.06);
-pub const COLOR_SHADOW_CARD: Color = Color::from_rgba8(0x00, 0x00, 0x00, 0.20);
-pub const COLOR_SHADOW_ACCENT: Color = Color::from_rgba8(0x4D, 0x8D, 0xFF, 0.15);
-pub const COLOR_SHADOW_PANEL: Color = Color::from_rgba8(0x00, 0x00, 0x00, 0.30);
 pub const COLOR_SUCCESS: Color = Color::from_rgb8(0x4F, 0xD2, 0x6A);
 pub const COLOR_ERROR: Color = Color::from_rgb8(0xFF, 0x5C, 0x5C);
+
+// --- clipboard-style glass derivation constants ---
+pub const RADIUS_CARD: f32 = 12.0;
+pub const OPACITY_CARD: f32 = 0.78;
+pub const OPACITY_CARD_HOVER: f32 = 0.82;
+pub const OPACITY_COATING: f32 = 0.40;
+pub const OPACITY_BANNER: f32 = 0.75;
+pub const CARD_LUM_DARKEN: f32 = 0.92;
+pub const CARD_LUM_HOVER: f32 = 0.96;
+pub const BORDER_GLASS_ALPHA: f32 = 0.08;
+pub const DIVIDER_ALPHA: f32 = 0.06;
+pub const HOVER_OVERLAY_ALPHA: f32 = 0.06;
+pub const PRESSED_SUBTLE_ALPHA: f32 = 0.08;
+pub const PRESSED_ALPHA: f32 = 0.10;
+pub const SHADOW_CARD_ALPHA: f32 = 0.20;
+pub const SHADOW_PANEL_ALPHA: f32 = 0.30;
+
+pub fn frosted_bg(theme: &cosmic::Theme, lum: f32, alpha: f32) -> Color {
+    let base: Color = theme.cosmic().background.base.into();
+    Color::from_rgba(base.r * lum, base.g * lum, base.b * lum, alpha)
+}
+
+pub fn on_color(theme: &cosmic::Theme) -> Color {
+    theme.cosmic().background.on.into()
+}
+
+pub fn on_overlay(theme: &cosmic::Theme, alpha: f32) -> Color {
+    let on: Color = theme.cosmic().background.on.into();
+    Color::from_rgba(on.r, on.g, on.b, alpha)
+}
 
 // Typography sizes
 pub const SIZE_HEADING: u16 = 15;
@@ -62,12 +76,6 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
         selected: bool,
         on_select: &Option<Message>,
     ) -> Element<'a, Message> {
-        let border_color = if selected {
-            COLOR_ACCENT
-        } else {
-            COLOR_BORDER_SUBTLE
-        };
-
         let label_elem: Element<'a, Message> = if selected {
             iced::widget::row![
                 icon::from_name("object-select-symbolic").size(SIZE_CAPTION),
@@ -93,14 +101,18 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
             .spacing(6)
             .align_y(Alignment::Center),
         )
-        .class(theme::Container::custom(move |_theme| {
-            let bg = if selected {
-                Background::Color(COLOR_BG_SELECTED_FROSTED)
+        .class(theme::Container::custom(move |theme| {
+            let border_color = if selected {
+                COLOR_ACCENT
             } else {
-                Background::Color(COLOR_BG_CARD_FROSTED)
+                on_overlay(theme, BORDER_GLASS_ALPHA)
             };
             iced_container::Style {
-                background: Some(bg),
+                background: Some(Background::Color(frosted_bg(
+                    theme,
+                    if selected { CARD_LUM_HOVER } else { CARD_LUM_DARKEN },
+                    if selected { OPACITY_CARD_HOVER } else { OPACITY_CARD },
+                ))),
                 border: Border {
                     radius: RADIUS_LG.into(),
                     width: 1.0,
@@ -108,13 +120,13 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                 },
                 shadow: if selected {
                     Shadow {
-                        color: COLOR_SHADOW_ACCENT,
+                        color: Color::from_rgba(COLOR_ACCENT.r, COLOR_ACCENT.g, COLOR_ACCENT.b, 0.15),
                         offset: Vector::new(0.0, 0.0),
                         blur_radius: RADIUS_MD,
                     }
                 } else {
                     Shadow {
-                        color: COLOR_SHADOW_CARD,
+                        color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_CARD_ALPHA),
                         offset: Vector::new(0.0, 2.0),
                         blur_radius: RADIUS_MD,
                     }
@@ -123,7 +135,7 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
             }
         }))
         .clip(true)
-        .padding([6, RADIUS_MD as u16])
+        .padding([6, RADIUS_CARD as u16])
         .width(Length::Fill);
 
         if selected || on_select.is_none() {
@@ -140,15 +152,15 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                         border_color: Color::TRANSPARENT,
                         ..button::Style::new()
                     }),
-                    hovered: Box::new(|_focused, _theme| button::Style {
-                        background: Some(Background::Color(COLOR_BG_HOVER)),
+                    hovered: Box::new(|_focused, theme| button::Style {
+                        background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                         border_radius: 0.0.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
                         ..button::Style::new()
                     }),
-                    pressed: Box::new(|_focused, _theme| button::Style {
-                        background: Some(Background::Color(COLOR_BG_PRESSED)),
+                    pressed: Box::new(|_focused, theme| button::Style {
+                        background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                         border_radius: 0.0.into(),
                         border_width: 0.0,
                         border_color: Color::TRANSPARENT,
@@ -199,16 +211,16 @@ pub fn pill_button<'a, Message: Clone + 'static>(
     )
     .on_press(message)
     .class(theme::Button::Custom {
-        active: Box::new(move |_focused, _theme| {
+        active: Box::new(move |_focused, theme| {
             let (bg, border) = if active {
                 (
-                    Background::Color(COLOR_BG_SELECTED_FROSTED),
+                    Background::Color(frosted_bg(theme, CARD_LUM_HOVER, OPACITY_CARD_HOVER)),
                     COLOR_ACCENT,
                 )
             } else {
                 (
-                    Background::Color(COLOR_BG_CARD_FROSTED),
-                    COLOR_BORDER_SUBTLE,
+                    Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD)),
+                    on_overlay(theme, BORDER_GLASS_ALPHA),
                 )
             };
             button::Style {
@@ -221,8 +233,8 @@ pub fn pill_button<'a, Message: Clone + 'static>(
                 ..button::Style::new()
             }
         }),
-        hovered: Box::new(|_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_HOVER)),
+        hovered: Box::new(|_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
             border_radius: RADIUS_PILL.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
@@ -230,8 +242,8 @@ pub fn pill_button<'a, Message: Clone + 'static>(
             icon_color: Some(COLOR_TEXT_HOVER),
             ..button::Style::new()
         }),
-        pressed: Box::new(|_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_PRESSED)),
+        pressed: Box::new(|_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
             border_radius: RADIUS_PILL.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
@@ -239,9 +251,9 @@ pub fn pill_button<'a, Message: Clone + 'static>(
             icon_color: Some(COLOR_TEXT_PRIMARY),
             ..button::Style::new()
         }),
-        disabled: Box::new(|_theme| {
+        disabled: Box::new(|theme| {
             button::Style {
-                background: Some(Background::Color(COLOR_BG_CARD_FROSTED)),
+                background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
                 border_radius: RADIUS_PILL.into(),
                 border_width: 0.0,
                 border_color: Color::TRANSPARENT,
@@ -302,16 +314,16 @@ pub fn status_card<'a, Message: Clone + 'static>(
     }
 
         let card = iced_container(header)
-        .class(theme::Container::custom(|_theme| {
+        .class(theme::Container::custom(|theme| {
             iced_container::Style {
-                background: Some(Background::Color(COLOR_BG_CARD_FROSTED)),
+                background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
                 border: Border {
                     radius: RADIUS_LG.into(),
                     width: 1.0,
-                    color: COLOR_BORDER_SUBTLE,
+                    color: on_overlay(theme, BORDER_GLASS_ALPHA),
                 },
                 shadow: Shadow {
-                    color: COLOR_SHADOW_CARD,
+                    color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_CARD_ALPHA),
                     offset: Vector::new(0.0, 2.0),
                     blur_radius: RADIUS_MD,
                 },
@@ -332,15 +344,15 @@ pub fn status_card<'a, Message: Clone + 'static>(
                     border_color: Color::TRANSPARENT,
                     ..button::Style::new()
                 }),
-                hovered: Box::new(|_focused, _theme| button::Style {
-                    background: Some(Background::Color(COLOR_BG_HOVER)),
+                hovered: Box::new(|_focused, theme| button::Style {
+                    background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                     border_radius: 0.0.into(),
                     border_width: 0.0,
                     border_color: Color::TRANSPARENT,
                     ..button::Style::new()
                 }),
-                pressed: Box::new(|_focused, _theme| button::Style {
-                    background: Some(Background::Color(COLOR_BG_PRESSED_SUBTLE)),
+                pressed: Box::new(|_focused, theme| button::Style {
+                    background: Some(Background::Color(on_overlay(theme, PRESSED_SUBTLE_ALPHA))),
                     border_radius: 0.0.into(),
                     border_width: 0.0,
                     border_color: Color::TRANSPARENT,
@@ -377,13 +389,13 @@ pub fn info_banner<'a, Message: 'static>(
         .spacing(10)
         .align_y(Alignment::Center),
     )
-    .class(theme::Container::custom(|_theme| {
+    .class(theme::Container::custom(|theme| {
         iced_container::Style {
-            background: Some(Background::Color(COLOR_BG_BANNER_FROSTED)),
+            background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_BANNER))),
             border: Border {
                 radius: RADIUS_MD.into(),
                 width: 1.0,
-                color: COLOR_BORDER_SUBTLE,
+                color: on_overlay(theme, BORDER_GLASS_ALPHA),
             },
             ..Default::default()
         }
@@ -419,18 +431,18 @@ pub fn list_row<'a, Message: Clone + 'static>(
             icon_color: Some(COLOR_TEXT_PRIMARY),
             ..button::Style::new()
         }),
-        hovered: Box::new(|_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_HOVER)),
-            border_radius: RADIUS_MD.into(),
+        hovered: Box::new(|_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
+            border_radius: RADIUS_CARD.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             text_color: Some(COLOR_TEXT_HOVER),
             icon_color: Some(COLOR_TEXT_PRIMARY),
             ..button::Style::new()
         }),
-        pressed: Box::new(|_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_PRESSED_SUBTLE)),
-            border_radius: RADIUS_MD.into(),
+        pressed: Box::new(|_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, PRESSED_SUBTLE_ALPHA))),
+            border_radius: RADIUS_CARD.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             text_color: Some(COLOR_TEXT_HOVER),
@@ -488,17 +500,17 @@ pub fn quick_action_btn<'a, Message: Clone + 'static>(
             icon_color: Some(icon_color),
             ..button::Style::new()
         }),
-        hovered: Box::new(move |_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_HOVER)),
+        hovered: Box::new(move |_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
             border_radius: RADIUS_MD.into(),
             border_width: 1.0,
-            border_color: if is_active { COLOR_ACCENT } else { COLOR_BORDER_SUBTLE },
+            border_color: if is_active { COLOR_ACCENT } else { on_overlay(theme, BORDER_GLASS_ALPHA) },
             text_color: Some(COLOR_TEXT_PRIMARY),
             icon_color: Some(COLOR_TEXT_HOVER),
             ..button::Style::new()
         }),
-            pressed: Box::new(|_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_PRESSED)),
+            pressed: Box::new(|_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
             border_radius: RADIUS_MD.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
@@ -540,25 +552,25 @@ pub fn disclosure_row<'a, Message: Clone + 'static>(
     .class(theme::Button::Custom {
         active: Box::new(|_focused, _theme| button::Style {
             background: None,
-            border_radius: RADIUS_MD.into(),
+            border_radius: RADIUS_CARD.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             text_color: Some(COLOR_TEXT_PRIMARY),
             icon_color: Some(COLOR_TEXT_PRIMARY),
             ..button::Style::new()
         }),
-        hovered: Box::new(|_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_HOVER)),
-            border_radius: RADIUS_MD.into(),
+        hovered: Box::new(|_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
+            border_radius: RADIUS_CARD.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             text_color: Some(COLOR_TEXT_HOVER),
             icon_color: Some(COLOR_TEXT_PRIMARY),
             ..button::Style::new()
         }),
-        pressed: Box::new(|_focused, _theme| button::Style {
-            background: Some(Background::Color(COLOR_BG_PRESSED_SUBTLE)),
-            border_radius: RADIUS_MD.into(),
+        pressed: Box::new(|_focused, theme| button::Style {
+            background: Some(Background::Color(on_overlay(theme, PRESSED_SUBTLE_ALPHA))),
+            border_radius: RADIUS_CARD.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             text_color: Some(COLOR_TEXT_HOVER),
@@ -567,7 +579,7 @@ pub fn disclosure_row<'a, Message: Clone + 'static>(
         }),
         disabled: Box::new(|_theme| button::Style {
             background: None,
-            border_radius: RADIUS_MD.into(),
+            border_radius: RADIUS_CARD.into(),
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             text_color: Some(COLOR_TEXT_DISABLED),
@@ -580,33 +592,33 @@ pub fn disclosure_row<'a, Message: Clone + 'static>(
     .into()
 }
 
-pub fn card_default(_theme: &cosmic::Theme) -> iced_container::Style {
+pub fn card_default(theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(Background::Color(COLOR_BG_CARD_FROSTED)),
+        background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
         border: Border {
-            radius: RADIUS_MD.into(),
+            radius: RADIUS_CARD.into(),
             width: 1.0,
-            color: COLOR_BORDER_GLASS,
+            color: on_overlay(theme, BORDER_GLASS_ALPHA),
         },
         shadow: Shadow {
-            color: COLOR_SHADOW_CARD,
+            color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_CARD_ALPHA),
             offset: Vector::new(0.0, 2.0),
-            blur_radius: RADIUS_MD,
+            blur_radius: RADIUS_CARD,
         },
         ..Default::default()
     }
 }
 
-pub fn card_elevated(_theme: &cosmic::Theme) -> iced_container::Style {
+pub fn card_elevated(theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(Background::Color(COLOR_BG_SELECTED_FROSTED)),
+        background: Some(Background::Color(frosted_bg(theme, CARD_LUM_HOVER, OPACITY_CARD_HOVER))),
         border: Border {
-            radius: RADIUS_MD.into(),
+            radius: RADIUS_CARD.into(),
             width: 1.0,
-            color: COLOR_BORDER_SUBTLE,
+            color: on_overlay(theme, BORDER_GLASS_ALPHA),
         },
         shadow: Shadow {
-            color: COLOR_SHADOW_CARD,
+            color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_CARD_ALPHA),
             offset: Vector::new(0.0, 4.0),
             blur_radius: 12.0,
         },
@@ -616,9 +628,9 @@ pub fn card_elevated(_theme: &cosmic::Theme) -> iced_container::Style {
 
 pub fn card_sunken(_theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(Background::Color(Color::from_rgba8(0x00, 0x00, 0x00, 0.12))),
+        background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.12))),
         border: Border {
-            radius: RADIUS_MD.into(),
+            radius: RADIUS_CARD.into(),
             width: 0.0,
             color: Color::TRANSPARENT,
         },
