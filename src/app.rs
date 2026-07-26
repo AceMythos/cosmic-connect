@@ -357,12 +357,14 @@ impl CosmicConnect {
 
         let row_content: Element<'a, Message> = row![
             icon::from_name("dialog-information-symbolic").size(18),
-            column![
-                text::body(&notif.app_name).size(SIZE_BODY),
-                text::caption(&notif.text).size(SIZE_CAPTION),
-            ]
-            .spacing(1),
-            container(row![]).width(Length::Fill),
+            container(
+                column![
+                    text::body(&notif.app_name).size(SIZE_BODY),
+                    text::caption(&notif.text).size(SIZE_CAPTION),
+                ]
+                .spacing(1),
+            )
+            .width(Length::Fill),
             {
                 let dismiss_btn: Element<'a, Message> = if notif.dismissable {
                     button::custom(icon::from_name("window-close-symbolic").size(SIZE_CAPTION))
