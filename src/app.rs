@@ -77,7 +77,7 @@ pub struct CosmicConnect {
     is_discovering: bool,
     auto_discovering: bool,
     next_auto_discovery: Option<std::time::Instant>,
-    selected_device_id: Option<usize>,
+    selected_device_id: Option<String>,
     advanced_device: Option<String>,
     received_files: HashMap<String, Vec<ReceivedFile>>,
     active_notifs: HashMap<String, u32>,
@@ -123,7 +123,7 @@ pub enum Message {
     PlayerInfoUpdated(String, Option<PlayerInfo>),
     MediaAction(String, String),
     SelectPlayer(String, String),
-    SelectDevice(usize),
+    SelectDevice(String),
     ToggleAdvanced(String),
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
     FileReceived(String, String),
@@ -173,22 +173,26 @@ impl CosmicConnect {
         if self.backend.is_none() {
             return "Connecting…".into();
         }
-        if let Some(device) = self.devices.iter().find(|d| d.is_reachable) {
+        if let Some(device) = self.selected_device() {
             let net = self.drafts.get(&device.id).and_then(|d| d.connectivity.as_ref());
-            if let Some(bat) = &device.battery {
-                let charge_label = if bat.is_charging { charging_anim(bat.charge) } else { format!("{}%", bat.charge) };
-                if let Some(conn) = net {
-                    format!("{} - ({}) {}", device.name, charge_label, signal_bars(conn.signal_strength))
+            if device.is_reachable {
+                if let Some(bat) = &device.battery {
+                    let charge_label = if bat.is_charging { charging_anim(bat.charge) } else { format!("{}%", bat.charge) };
+                    if let Some(conn) = net {
+                        format!("{} - ({}) {}", device.name, charge_label, signal_bars(conn.signal_strength))
+                    } else {
+                        format!("{} - ({})", device.name, charge_label)
+                    }
+                } else if let Some(conn) = net {
+                    format!("{} - {} - Connected", device.name, signal_bars(conn.signal_strength))
                 } else {
-                    format!("{} - ({})", device.name, charge_label)
+                    format!("{} - Connected", device.name)
                 }
-            } else if let Some(conn) = net {
-                format!("{} - {} - Connected", device.name, signal_bars(conn.signal_strength))
+            } else if device.is_paired {
+                format!("{} - Offline", device.name)
             } else {
-                format!("{} - Connected", device.name)
+                format!("{} - Not paired", device.name)
             }
-        } else if let Some(device) = self.devices.iter().find(|d| d.is_paired) {
-            format!("{} - Offline", device.name)
         } else if !self.devices.is_empty() {
             format!("{} - Not paired", self.devices[0].name)
         } else {
@@ -206,7 +210,9 @@ impl CosmicConnect {
     }
 
     fn selected_device(&self) -> Option<&Device> {
-        self.selected_device_id.and_then(|i| self.devices.get(i))
+        self.selected_device_id
+            .as_deref()
+            .and_then(|id| self.devices.iter().find(|d| d.id == *id))
     }
 
     fn render_device_selector(&self) -> Element<'_, Message> {
@@ -221,9 +227,19 @@ impl CosmicConnect {
         };
 
         let has_next = self.devices.len() > 1;
-        let select_msg = has_next.then(|| Message::SelectDevice(
-            self.selected_device_id.map(|i| (i + 1) % self.devices.len()).unwrap_or(0)
-        ));
+        let select_msg = has_next.then(|| {
+            let idx = self
+                .selected_device_id
+                .as_deref()
+                .and_then(|id| self.devices.iter().position(|d| d.id == *id))
+                .unwrap_or(0);
+            let next = self
+                .devices
+                .get((idx + 1) % self.devices.len())
+                .map(|d| d.id.clone())
+                .unwrap_or_default();
+            Message::SelectDevice(next)
+        });
 
         crate::widgets::device_selector_card(
             "computer-symbolic",
@@ -1019,8 +1035,18 @@ impl cosmic::Application for CosmicConnect {
                 }
                 self.devices = merged;
                 self.last_sync = Some(std::time::Instant::now());
-                if self.selected_device_id.map(|i| i >= self.devices.len()).unwrap_or(true) && !self.devices.is_empty() {
-                    self.selected_device_id = Some(0);
+                let selection_ok = self
+                    .selected_device_id
+                    .as_deref()
+                    .map(|id| self.devices.iter().any(|d| d.id == *id))
+                    .unwrap_or(false);
+                if !selection_ok && !self.devices.is_empty() {
+                    self.selected_device_id = self
+                        .devices
+                        .iter()
+                        .find(|d| d.is_reachable)
+                        .or_else(|| self.devices.first())
+                        .map(|d| d.id.clone());
                 }
                 self.sync_drafts();
                 self.error = None;
@@ -1649,9 +1675,9 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::NoOp => {}
-            Message::SelectDevice(index) => {
-                if index < self.devices.len() {
-                    self.selected_device_id = Some(index);
+            Message::SelectDevice(id) => {
+                if self.devices.iter().any(|d| d.id == id) {
+                    self.selected_device_id = Some(id);
                     self.advanced_device = None;
                 }
             }
@@ -1671,7 +1697,7 @@ impl cosmic::Application for CosmicConnect {
 
     fn view(&self) -> Element<'_, Self::Message> {
         let suggested = self.core.applet.suggested_size(false);
-        let icon_name = if self.devices.iter().any(|d| d.is_reachable) {
+        let icon_name = if self.selected_device().map(|d| d.is_reachable).unwrap_or(false) {
             "io.github.acemythos.Connect-symbolic"
         } else {
             "io.github.acemythos.Connect-off-symbolic"
