@@ -21,6 +21,10 @@ impl Device {
 
         plugins.iter().any(|p| p.as_str() == name)
     }
+
+    pub fn should_display(&self) -> bool {
+        self.is_paired || self.is_reachable || self.pair_state != 0
+    }
 }
 
 #[cfg(test)]
@@ -43,6 +47,52 @@ mod tests {
 
         assert!(device.has_plugin("kdeconnect_ping"));
         assert!(!device.has_plugin("kdeconnect_clipboard"));
+    }
+
+    #[test]
+    fn hides_stale_unpaired_unreachable_devices() {
+        let device = Device {
+            id: "device-1".into(),
+            name: "Old Phone".into(),
+            device_type: DeviceType::Phone,
+            is_reachable: false,
+            is_paired: false,
+            pair_state: 0,
+            battery: None,
+            supported_plugins: vec![],
+            loaded_plugins: vec![],
+        };
+
+        assert!(!device.should_display());
+    }
+
+    #[test]
+    fn keeps_reachable_or_paired_devices_visible() {
+        let reachable = Device {
+            id: "device-1".into(),
+            name: "Nearby Phone".into(),
+            device_type: DeviceType::Phone,
+            is_reachable: true,
+            is_paired: false,
+            pair_state: 0,
+            battery: None,
+            supported_plugins: vec![],
+            loaded_plugins: vec![],
+        };
+        let paired = Device {
+            id: "device-2".into(),
+            name: "Paired Phone".into(),
+            device_type: DeviceType::Phone,
+            is_reachable: false,
+            is_paired: true,
+            pair_state: 3,
+            battery: None,
+            supported_plugins: vec![],
+            loaded_plugins: vec![],
+        };
+
+        assert!(reachable.should_display());
+        assert!(paired.should_display());
     }
 }
 

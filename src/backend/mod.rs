@@ -252,7 +252,15 @@ impl KdeConnectBackend {
         let mut devices = Vec::with_capacity(ids.len());
         for id in ids {
             let device = self.fetch_device(&id).await;
-            devices.push(device);
+            if device.should_display() {
+                devices.push(device);
+            } else {
+                log::debug!(
+                    "Ignoring stale KDE Connect device '{}' ({})",
+                    device.name,
+                    device.id
+                );
+            }
         }
         devices
     }
@@ -554,4 +562,3 @@ impl KdeConnectBackend {
         Ok(notif_id)
     }
 }
-
