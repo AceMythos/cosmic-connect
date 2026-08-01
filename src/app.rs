@@ -1010,13 +1010,14 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::BackendReady(backend) => {
+                log::info!("Backend ready");
                 self.backend = Some(backend);
                 self.error = None;
                 return Task::perform(async {}, |_| Message::RefreshDevices)
                     .map(cosmic::Action::App);
             }
             Message::DevicesUpdated(devices, pairing_ids) => {
-                log::info!("DevicesUpdated: {} devices, {} pairing requests", devices.len(), pairing_ids.len());
+                log::debug!("DevicesUpdated: {} devices, {} pairing requests", devices.len(), pairing_ids.len());
                 let mut merged = devices;
                 for pid in &pairing_ids {
                     if !merged.iter().any(|d| &d.id == pid) {
@@ -1031,6 +1032,20 @@ impl cosmic::Application for CosmicConnect {
                             supported_plugins: vec![],
                             loaded_plugins: vec![],
                         });
+                    }
+                }
+                for old in &self.devices {
+                    if let Some(new) = merged.iter().find(|d| d.id == old.id) {
+                        if old.is_reachable != new.is_reachable {
+                            log::debug!("Device '{}' {} (paired={})", new.name, if new.is_reachable { "became reachable" } else { "became unreachable" }, new.is_paired);
+                        }
+                    } else {
+                        log::debug!("Device '{}' removed", old.name);
+                    }
+                }
+                for new in &merged {
+                    if !self.devices.iter().any(|d| d.id == new.id) {
+                        log::debug!("Device '{}' added (reachable={})", new.name, new.is_reachable);
                     }
                 }
                 self.devices = merged;
@@ -1059,6 +1074,7 @@ impl cosmic::Application for CosmicConnect {
                             .find(|d| d.id == *pid)
                             .map(|d| d.name.clone())
                             .unwrap_or_else(|| "Unknown device".into());
+                        log::info!("Pairing request from '{dev_name}' ({pid})");
                         if let Some(backend) = self.backend.clone() {
                             let name = dev_name;
                             let did = pid.clone();
@@ -1119,6 +1135,7 @@ impl cosmic::Application for CosmicConnect {
                     self.auto_discovering = false;
                     self.next_auto_discovery = None;
                 } else if self.next_auto_discovery.map_or(true, |t| now >= t) {
+                    log::debug!("No reachable devices, triggering auto-discovery");
                     self.auto_discovering = true;
                     self.next_auto_discovery = Some(now + Duration::from_secs(30));
                     if let Some(backend) = self.backend.clone() {
@@ -1155,6 +1172,7 @@ impl cosmic::Application for CosmicConnect {
                 .map(cosmic::Action::App);
             }
             Message::BackendError(error) => {
+                log::error!("Backend error: {error}");
                 self.error = Some(error);
             }
             Message::ClipboardTextChanged(device_id, value) => {
@@ -1253,6 +1271,10 @@ impl cosmic::Application for CosmicConnect {
                     .and_then(|p| p.rsplit('/').next().map(|s| s.to_string()))
                     .unwrap_or_default();
                 draft.last_action = None;
+                match &result {
+                    Ok(message) => log::info!("Action '{action_label}' on '{device_name}' succeeded: {message}"),
+                    Err(error) => log::error!("Action '{action_label}' on '{device_name}' failed: {error}"),
+                }
                 draft.status = Some(match &result {
                     Ok(message) => message.clone(),
                     Err(error) => error.clone(),
@@ -1325,6 +1347,7 @@ impl cosmic::Application for CosmicConnect {
                     return Task::none();
                 }
                 self.draft_mut(&device_id).reply_text.clear();
+                log::debug!("SendReply: thread {thread_id}, {} chars", text.len());
                 let action = ActionType::ReplyToConversation(thread_id, text);
                 return Task::perform(
                     async {},
@@ -1356,6 +1379,7 @@ impl cosmic::Application for CosmicConnect {
                 let text = self.draft_mut(&device_id).notify_reply_text.clone();
                 if text.trim().is_empty() { return Task::none(); }
                 self.draft_mut(&device_id).notify_reply_text.clear();
+                log::debug!("SendNotifyReply: notif {internal_id}, {} chars", text.len());
                 let action = ActionType::ReplyToNotification(internal_id, text);
                 return Task::perform(
                     async {},
@@ -1364,6 +1388,7 @@ impl cosmic::Application for CosmicConnect {
                 .map(cosmic::Action::App);
             }
             Message::DismissNotification(device_id, internal_id) => {
+                log::debug!("DismissNotification: notif {internal_id} on {device_id}");
                 return Task::perform(
                     async {},
                     move |_| Message::PerformAction(device_id, ActionType::DismissNotification(internal_id)),
@@ -1374,6 +1399,7 @@ impl cosmic::Application for CosmicConnect {
                 let backend = self.backend.clone();
                 let notifs = self.draft_mut(&device_id).notifications.clone();
                 self.draft_mut(&device_id).notifications.clear();
+                log::debug!("DismissAllNotifications: {} notifications on {device_id}", notifs.len());
                 let Some(backend) = backend else { return Task::none() };
                 return Task::perform(
                     async move {
@@ -1415,6 +1441,7 @@ impl cosmic::Application for CosmicConnect {
                 .map(cosmic::Action::App);
             }
             Message::TransferStarted(device_id, transfer_id, file_name, total_bytes) => {
+                log::info!("TransferStarted: '{file_name}' ({total_bytes} bytes) from {device_id} (transfer {transfer_id})");
                 let rf = ReceivedFile {
                     device_id: device_id.clone(),
                     file_path: String::new(),
@@ -1440,6 +1467,7 @@ impl cosmic::Application for CosmicConnect {
                 let pct_block = (percent / 5) * 5;
                 if pct_block <= prev { return Task::none(); }
                 self.last_notif_pct.insert(nkey.clone(), pct_block);
+                log::debug!("TransferProgress: {transfer_id} at {percent}%");
                 if let Some(&notif_id) = self.active_notifs.get(&nkey) {
                     let Some(backend) = self.backend.clone() else { return Task::none() };
                     let nk = nkey.clone();
@@ -1476,6 +1504,7 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::TransferFinished(device_id, transfer_id, file_path) => {
+                log::info!("TransferFinished: {file_path} from {device_id} (transfer {transfer_id})");
                 let nkey = format!("transfer:{transfer_id}");
                 let file_name = file_path.rsplit('/').next()
                     .unwrap_or(&file_path)
@@ -1556,6 +1585,7 @@ impl cosmic::Application for CosmicConnect {
                 ).map(cosmic::Action::App);
             }
             Message::FileReceived(device_id, file_path) => {
+                log::info!("FileReceived: {file_path} from {device_id}");
                 let file_name = file_path.rsplit('/').next()
                     .unwrap_or(&file_path)
                     .to_string();
@@ -1584,6 +1614,7 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::PingReceived(device_id) => {
+                log::info!("PingReceived from {device_id}");
                 let device_name = self.devices.iter()
                     .find(|d| d.id == device_id)
                     .map(|d| d.name.clone())
@@ -1603,6 +1634,7 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::ClipboardReceived(device_id, content) => {
+                log::debug!("ClipboardReceived from {device_id} ({} chars)", content.len());
                 let device_name = self.devices.iter()
                     .find(|d| d.id == device_id)
                     .map(|d| d.name.clone())
@@ -1654,11 +1686,13 @@ impl cosmic::Application for CosmicConnect {
                         self.active_notifs.insert(key, notif_id);
                     }
                 } else {
+                    log::info!("Pairing request notification created for '{key}' (notif {notif_id})");
                     self.pairing_notifs.insert(notif_id, key);
                 }
             }
             Message::NotifAction(notif_id, action_key) => {
                 if let Some(device_id) = self.pairing_notifs.remove(&notif_id) {
+                    log::info!("Pairing action '{action_key}' for {device_id}");
                     self.notified_pair_ids.remove(&device_id);
                     if let Some(backend) = self.backend.clone() {
                         return Task::perform(
