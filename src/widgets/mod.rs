@@ -3,6 +3,7 @@ use cosmic::iced::{Background, Border, Color, Length, Shadow, Vector};
 use cosmic::theme;
 use cosmic::widget::button;
 use cosmic::widget::container as iced_container;
+use cosmic::widget::tooltip;
 use cosmic::widget::{icon, text};
 use cosmic::{Element, iced};
 
@@ -645,4 +646,204 @@ pub fn section_header<'a, Message: 'static>(title: &'a str) -> Element<'a, Messa
     .padding([4, 14, 2, 14])
     .width(Length::Fill)
     .into()
+}
+
+pub fn paired_device_row<'a, Message: Clone + 'static>(
+    icon_name: &'a str,
+    name: &'a str,
+    is_reachable: bool,
+    is_selected: bool,
+    on_select: Option<Message>,
+    on_unpair: Option<Message>,
+) -> Element<'a, Message> {
+    let dot = if is_reachable { "●" } else { "○" };
+    let status_text = if is_reachable { "Connected" } else { "Offline" };
+
+    let body = iced_container(
+        iced::widget::row![
+            icon::from_name(icon_name).size(16),
+            iced::widget::column![
+                text::body(name).size(SIZE_CAPTION),
+                iced::widget::row![
+                    text::body(dot).size(SIZE_CAPTION),
+                    text::caption(status_text).size(SIZE_CAPTION),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(1),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    )
+    .class(theme::Container::custom(move |theme| {
+        let border_color = if is_selected {
+            COLOR_ACCENT
+        } else {
+            on_overlay(theme, BORDER_GLASS_ALPHA)
+        };
+        iced_container::Style {
+            background: Some(Background::Color(frosted_bg(
+                theme,
+                if is_selected {
+                    CARD_LUM_HOVER
+                } else {
+                    CARD_LUM_DARKEN
+                },
+                if is_selected {
+                    OPACITY_CARD_HOVER
+                } else {
+                    OPACITY_CARD
+                },
+            ))),
+            border: Border {
+                radius: RADIUS_MD.into(),
+                width: 1.0,
+                color: border_color,
+            },
+            shadow: if is_selected {
+                Shadow {
+                    color: Color::from_rgba(COLOR_ACCENT.r, COLOR_ACCENT.g, COLOR_ACCENT.b, 0.15),
+                    offset: Vector::new(0.0, 0.0),
+                    blur_radius: RADIUS_MD,
+                }
+            } else {
+                Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_CARD_ALPHA),
+                    offset: Vector::new(0.0, 2.0),
+                    blur_radius: RADIUS_MD,
+                }
+            },
+            ..Default::default()
+        }
+    }))
+    .clip(true)
+    .padding([6, 10])
+    .width(Length::Fill);
+
+    let select_btn = match on_select {
+        Some(msg) => button::custom(body)
+            .on_press(msg)
+            .class(theme::Button::Custom {
+                active: Box::new(|_focused, _theme| button::Style {
+                    background: None,
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+                hovered: Box::new(|_focused, theme| button::Style {
+                    background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+                pressed: Box::new(|_focused, theme| button::Style {
+                    background: Some(Background::Color(on_overlay(theme, PRESSED_SUBTLE_ALPHA))),
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+                disabled: Box::new(|_theme| button::Style {
+                    background: None,
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+            })
+            .width(Length::Fill),
+        None => button::custom(body)
+            .class(theme::Button::Custom {
+                active: Box::new(|_focused, _theme| button::Style {
+                    background: None,
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+                hovered: Box::new(|_focused, _theme| button::Style {
+                    background: None,
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+                pressed: Box::new(|_focused, _theme| button::Style {
+                    background: None,
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+                disabled: Box::new(|_theme| button::Style {
+                    background: None,
+                    border_radius: 0.0.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    ..button::Style::new()
+                }),
+            })
+            .width(Length::Fill),
+    };
+
+    let unpair_btn: Element<'a, Message> = match on_unpair {
+        Some(msg) => {
+            let inner = button::custom(
+                iced_container(
+                    iced::widget::row![icon::from_name("user-trash-symbolic").size(14),]
+                        .align_y(Alignment::Center),
+                )
+                .padding([6, 8]),
+            )
+            .on_press(msg)
+            .class(theme::Button::Custom {
+                active: Box::new(|_focused, theme| button::Style {
+                    background: Some(Background::Color(frosted_bg(
+                        theme,
+                        CARD_LUM_DARKEN,
+                        OPACITY_CARD,
+                    ))),
+                    border_radius: RADIUS_MD.into(),
+                    border_width: 1.0,
+                    border_color: on_overlay(theme, BORDER_GLASS_ALPHA),
+                    icon_color: Some(COLOR_TEXT_PRIMARY),
+                    ..button::Style::new()
+                }),
+                hovered: Box::new(|_focused, theme| button::Style {
+                    background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
+                    border_radius: RADIUS_MD.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    icon_color: Some(COLOR_TEXT_HOVER),
+                    ..button::Style::new()
+                }),
+                pressed: Box::new(|_focused, theme| button::Style {
+                    background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
+                    border_radius: RADIUS_MD.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    icon_color: Some(COLOR_TEXT_HOVER),
+                    ..button::Style::new()
+                }),
+                disabled: Box::new(|_theme| button::Style {
+                    background: None,
+                    border_radius: RADIUS_MD.into(),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                    icon_color: Some(COLOR_TEXT_DISABLED),
+                    ..button::Style::new()
+                }),
+            });
+            tooltip(inner, "Unpair device", tooltip::Position::Top).into()
+        }
+        None => iced::widget::row![].into(),
+    };
+
+    iced::widget::row![select_btn, unpair_btn]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
 }

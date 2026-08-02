@@ -78,6 +78,8 @@ pub struct CosmicConnect {
     auto_discovering: bool,
     next_auto_discovery: Option<std::time::Instant>,
     selected_device_id: Option<String>,
+    pending_unpair: Option<String>,
+    unpair_error: Option<(String, String)>,
     advanced_device: Option<String>,
     received_files: HashMap<String, Vec<ReceivedFile>>,
     active_notifs: HashMap<String, u32>,
@@ -124,6 +126,9 @@ pub enum Message {
     MediaAction(String, String),
     SelectPlayer(String, String),
     SelectDevice(String),
+    RequestUnpair(String),
+    CancelUnpair,
+    ConfirmUnpair,
     ToggleAdvanced(String),
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
     FileReceived(String, String),
@@ -301,7 +306,7 @@ impl CosmicConnect {
             buttons.push(crate::widgets::quick_action_btn(
                 "user-trash-symbolic",
                 "Unpair",
-                Message::PerformAction(device.id.clone(), ActionType::Unpair),
+                Message::RequestUnpair(device.id.clone()),
                 false,
             ));
         } else if device.pair_state == 2 {
@@ -341,6 +346,97 @@ impl CosmicConnect {
                 .into(),
             )
         }
+    }
+
+    fn render_paired_devices_section(&self) -> Option<Element<'_, Message>> {
+        let paired: Vec<&Device> = self
+            .devices
+            .iter()
+            .filter(|d| d.is_paired || d.pair_state == 3)
+            .collect();
+
+        let mut children: Vec<Element<Message>> = Vec::new();
+        children.push(divider::horizontal::default().into());
+        children.push(crate::widgets::section_header("Paired Devices").into());
+
+        if paired.is_empty() {
+            children.push(
+                container(text::caption("No paired devices").size(SIZE_CAPTION))
+                    .padding([2, 14, 8, 14])
+                    .into(),
+            );
+            return Some(column::with_children(children).spacing(6).into());
+        }
+
+        for device in paired {
+            let is_selected = self.selected_device_id.as_deref() == Some(device.id.as_str());
+            children.push(
+                crate::widgets::paired_device_row(
+                    device.device_type.icon_name(),
+                    device.name.as_str(),
+                    device.is_reachable,
+                    is_selected,
+                    Some(Message::SelectDevice(device.id.clone())),
+                    Some(Message::RequestUnpair(device.id.clone())),
+                )
+                .into(),
+            );
+
+            if self.pending_unpair.as_deref() == Some(device.id.as_str()) {
+                children.push(self.render_unpair_confirmation(device));
+            }
+
+            if let Some((id, err)) = &self.unpair_error {
+                if id == &device.id {
+                    children.push(
+                        container(
+                            row![
+                                icon::from_name("dialog-error-symbolic").size(12),
+                                text::caption(err).size(SIZE_CAPTION),
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                        )
+                        .style(glass_card)
+                        .padding([8, 12])
+                        .into(),
+                    );
+                }
+            }
+        }
+
+        Some(column::with_children(children).spacing(6).into())
+    }
+
+    fn render_unpair_confirmation<'a>(&'a self, device: &'a Device) -> Element<'a, Message> {
+        container(
+            column![
+                text::body(format!("Unpair {}?", device.name)).size(SIZE_BODY),
+                text::caption("This device will need to be paired again before it can reconnect.")
+                    .size(SIZE_CAPTION),
+                row![
+                    crate::widgets::pill_button(
+                        "dialog-cancel-symbolic",
+                        "Cancel",
+                        Message::CancelUnpair,
+                        false,
+                    ),
+                    crate::widgets::pill_button(
+                        "user-trash-symbolic",
+                        "Unpair",
+                        Message::ConfirmUnpair,
+                        false,
+                    ),
+                ]
+                .spacing(6),
+            ]
+            .spacing(8)
+            .align_x(Alignment::Center),
+        )
+        .style(glass_card)
+        .padding(12)
+        .width(Length::Fill)
+        .into()
     }
 
     fn render_info_banner<'a>(&'a self, device: &'a Device, draft: &'a DeviceDraft) -> Option<Element<'a, Message>> {
@@ -1050,6 +1146,15 @@ impl cosmic::Application for CosmicConnect {
                 }
                 self.devices = merged;
                 self.last_sync = Some(std::time::Instant::now());
+                if let Some(pending) = &self.pending_unpair {
+                    if !self
+                        .devices
+                        .iter()
+                        .any(|d| &d.id == pending && (d.is_paired || d.pair_state == 3))
+                    {
+                        self.pending_unpair = None;
+                    }
+                }
                 let selection_ok = self
                     .selected_device_id
                     .as_deref()
@@ -1265,6 +1370,7 @@ impl cosmic::Application for CosmicConnect {
                 let backend = self.backend.clone();
 
                 let draft = self.draft_mut(&device_id);
+                let was_unpair = matches!(draft.last_action, Some(ActionType::Unpair));
                 let action_label = draft.last_action.as_ref().map(|a| a.label()).unwrap_or("Action").to_string();
                 let fname = draft.last_action.as_ref()
                     .and_then(|a| if let ActionType::SendFile(p) = a { Some(p.clone()) } else { None })
@@ -1279,6 +1385,19 @@ impl cosmic::Application for CosmicConnect {
                     Ok(message) => message.clone(),
                     Err(error) => error.clone(),
                 });
+
+                if was_unpair {
+                    if self.pending_unpair.as_deref() == Some(device_id.as_str()) {
+                        self.pending_unpair = None;
+                    }
+                    match &result {
+                        Ok(_) => self.unpair_error = None,
+                        Err(error) => {
+                            self.unpair_error =
+                                Some((device_id.clone(), format!("Failed to unpair: {error}")));
+                        }
+                    }
+                }
 
                 let notif_msg = match &result {
                     Ok(_) => {
@@ -1715,6 +1834,27 @@ impl cosmic::Application for CosmicConnect {
                     self.advanced_device = None;
                 }
             }
+            Message::RequestUnpair(device_id) => {
+                self.unpair_error = None;
+                self.pending_unpair = Some(device_id);
+            }
+            Message::CancelUnpair => {
+                self.pending_unpair = None;
+            }
+            Message::ConfirmUnpair => {
+                let Some(device_id) = self.pending_unpair.take() else {
+                    return Task::none();
+                };
+                self.unpair_error = None;
+                let still_paired = self
+                    .devices
+                    .iter()
+                    .any(|d| d.id == device_id && (d.is_paired || d.pair_state == 3));
+                if !still_paired {
+                    return Task::none();
+                }
+                return self.update(Message::PerformAction(device_id, ActionType::Unpair));
+            }
             Message::ToggleAdvanced(id) => {
                 let anim_id = id.clone();
                 if self.advanced_device.as_deref() == Some(&id) {
@@ -1858,11 +1998,13 @@ impl cosmic::Application for CosmicConnect {
                     );
                 }
 
-                if device.is_reachable {
+                if device.is_reachable || device.is_paired {
                     if let Some(qa) = self.render_quick_action_row(device) {
                         content.push(container(qa).into());
                     }
+                }
 
+                if device.is_reachable {
                     if let Some(banner) = self.render_info_banner(device, draft) {
                         content.push(container(banner).padding([8, 0]).into());
                     }
@@ -1894,6 +2036,10 @@ impl cosmic::Application for CosmicConnect {
 
                 content.push(self.render_advanced_section(device, draft));
             }
+        }
+
+        if let Some(section) = self.render_paired_devices_section() {
+            content.push(container(section).into());
         }
 
         let body = column::with_children(content).spacing(0);
