@@ -163,8 +163,6 @@ pub enum ActionType {
     AcceptPairing,
     CancelPairing,
     Unpair,
-    ReplyToConversation(i64, String),
-    SendSms(Vec<String>, String),
     DismissNotification(String),
     ReplyToNotification(String, String),
     MediaAction(String),
@@ -186,8 +184,6 @@ impl ActionType {
             Self::AcceptPairing => "Accept pairing",
             Self::CancelPairing => "Cancel pairing",
             Self::Unpair => "Unpair",
-            Self::ReplyToConversation(..) => "Reply",
-            Self::SendSms(..) => "SMS",
             Self::DismissNotification(_) => "Dismiss notification",
             Self::ReplyToNotification(..) => "Reply to notification",
             Self::MediaAction(_) => "Media action",
@@ -227,47 +223,6 @@ pub enum DeviceEvent {
     Added(String),
     Removed(String),
     VisibilityChanged(String, bool),
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, zvariant::Type)]
-pub struct ConversationAddress {
-    pub address: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, zvariant::Type)]
-pub struct Attachment {
-    pub part_id: i64,
-    pub mime_type: String,
-    pub base64_file: String,
-    pub unique_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, zvariant::Type)]
-pub struct ConversationMessage {
-    pub event_field: i32,
-    pub body: String,
-    pub addresses: Vec<ConversationAddress>,
-    pub date: i64,
-    pub message_type: i32,
-    pub read: i32,
-    pub thread_id: i64,
-    pub uid: i32,
-    pub sub_id: i64,
-    pub attachments: Vec<Attachment>,
-}
-
-impl ConversationMessage {
-    pub fn is_incoming(&self) -> bool {
-        self.message_type == 1
-    }
-
-    pub fn is_outgoing(&self) -> bool {
-        self.message_type == 2
-    }
-
-    pub fn sender(&self) -> &str {
-        self.addresses.first().map(|a| a.address.as_str()).unwrap_or("Unknown")
-    }
 }
 
 #[derive(Debug, Clone)]

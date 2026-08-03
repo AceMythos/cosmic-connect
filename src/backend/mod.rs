@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use zbus::{Connection, Proxy, Result};
 
-use crate::model::{ActionType, Attachment, BatteryInfo, ConnectivityInfo, ConversationAddress, ConversationMessage, Device, DeviceType, Notification, PlayerInfo};
+use crate::model::{ActionType, BatteryInfo, ConnectivityInfo, Device, DeviceType, Notification, PlayerInfo};
 
 const KDE_CONNECT_SERVICE: &str = "org.kde.kdeconnect";
 const DAEMON_PATH: &str = "/modules/kdeconnect";
@@ -349,14 +349,6 @@ impl KdeConnectBackend {
                 self.unpair(device_id).await;
                 Ok("Device unpaired".into())
             }
-            ActionType::ReplyToConversation(thread_id, ref text) => {
-                self.reply_to_conversation(device_id, *thread_id, text).await?;
-                Ok("Reply sent".into())
-            }
-            ActionType::SendSms(ref addresses, ref text) => {
-                self.send_sms(device_id, addresses, text).await?;
-                Ok("SMS sent".into())
-            }
             ActionType::DismissNotification(ref internal_id) => {
                 self.dismiss_notification(device_id, internal_id).await;
                 Ok("Notification dismissed".into())
@@ -374,63 +366,6 @@ impl KdeConnectBackend {
                 Ok(format!("Player '{player}' selected"))
             }
         }
-    }
-
-    pub async fn request_all_conversations(&self, device_id: &str) {
-        let p = Self::plugin_path(device_id, "sms");
-        match self.conn.call_method(
-            Some(KDE_CONNECT_SERVICE), p.as_str(),
-            Some("org.kde.kdeconnect.device.sms"), "requestAllConversations", &(),
-        ).await {
-            Ok(_) => log::info!("requestAllConversations succeeded for {device_id}"),
-            Err(e) => log::warn!("requestAllConversations failed for {device_id}: {e}"),
-        }
-    }
-
-    pub async fn active_conversations(&self, device_id: &str) -> Vec<ConversationMessage> {
-        let p = Self::device_path(device_id);
-        let result = self.conn.call_method(
-            Some(KDE_CONNECT_SERVICE), p.as_str(),
-            Some("org.kde.kdeconnect.device.conversations"), "activeConversations", &(),
-        ).await;
-        match result {
-            Ok(reply) => {
-                let body = reply.body();
-                let raw: Vec<zvariant::Value> = body.deserialize().unwrap_or_default();
-                log::info!("activeConversations raw count: {}", raw.len());
-                raw.into_iter().filter_map(|v| {
-                    let json = serde_json::to_value(&v).ok()?;
-                    let arr = json.get("value")?.as_array()?.clone();
-                    serde_json::from_value(serde_json::Value::Array(arr)).ok()
-                }).collect()
-            }
-            Err(e) => {
-                log::warn!("activeConversations failed for {device_id}: {e}");
-                vec![]
-            },
-        }
-    }
-
-    pub async fn reply_to_conversation(&self, device_id: &str, thread_id: i64, message: &str) -> Result<()> {
-        let p = Self::device_path(device_id);
-        self.conn.call_method(
-            Some(KDE_CONNECT_SERVICE), p.as_str(),
-            Some("org.kde.kdeconnect.device.conversations"), "replyToConversation",
-            &(thread_id, message, Vec::<zvariant::Value>::new()),
-        ).await?;
-        Ok(())
-    }
-
-    pub async fn send_sms(&self, device_id: &str, addresses: &[String], message: &str) -> Result<()> {
-        let p = Self::plugin_path(device_id, "sms");
-        let addrs: Vec<ConversationAddress> = addresses.iter().map(|a| ConversationAddress { address: a.clone() }).collect();
-        let attachments: Vec<Attachment> = vec![];
-        self.conn.call_method(
-            Some(KDE_CONNECT_SERVICE), p.as_str(),
-            Some("org.kde.kdeconnect.device.sms"), "sendSms",
-            &(addrs, message, attachments, -1i64),
-        ).await?;
-        Ok(())
     }
 
     fn notification_path(device_id: &str, notif_id: &str) -> String {

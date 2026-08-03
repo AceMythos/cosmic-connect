@@ -38,7 +38,7 @@ use futures_util::StreamExt;
 use zbus::{MatchRule, MessageStream};
 
 use crate::backend::KdeConnectBackend;
-use crate::model::{ActionType, ConnectivityInfo, ConversationMessage, Device, DeviceType, Notification, PlayerInfo, ReceivedFile};
+use crate::model::{ActionType, ConnectivityInfo, Device, DeviceType, Notification, PlayerInfo, ReceivedFile};
 
 const ID: &str = "io.github.acemythos.Connect";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -53,10 +53,6 @@ struct DeviceDraft {
     share_text: String,
     share_url: String,
     status: Option<String>,
-    conversations: Vec<ConversationMessage>,
-    selected_conversation: Option<i64>,
-    reply_text: String,
-    sms_busy: bool,
     notifications: Vec<Notification>,
     selected_notification: Option<String>,
     notify_reply_text: String,
@@ -109,11 +105,6 @@ pub enum Message {
     ReadClipboard(String),
     ClipboardReadFinished(String, Result<String, String>),
     DiscoverDevices,
-    RefreshConversations(String),
-    ConversationsLoaded(String, Vec<ConversationMessage>),
-    SelectConversation(String, i64),
-    ReplyTextChanged(String, String),
-    SendReply(String, i64),
     RefreshNotifications(String),
     NotificationsLoaded(String, Vec<Notification>),
     SelectNotification(String, String),
@@ -663,82 +654,6 @@ impl CosmicConnect {
             true,
             Message::ToggleAdvanced(device.id.clone()),
         ));
-
-        if device.is_paired && device.is_reachable && device.has_plugin("kdeconnect_sms") {
-            children.push(divider::horizontal::default().into());
-
-            if draft.conversations.is_empty() && !draft.sms_busy {
-                children.push(
-                    container(
-                        container(
-                            button::custom(
-                                row![
-                                    icon::from_name("mail-send-symbolic").size(14),
-                                    text::caption("Load Conversations"),
-                                ]
-                                .spacing(6)
-                                .align_y(Alignment::Center),
-                            )
-                            .on_press(Message::RefreshConversations(device.id.clone()))
-                            .padding([8, 12])
-                            .width(Length::Fill)
-                        )
-                        .style(glass_card)
-                    )
-                    .padding([4, 0])
-                    .into(),
-                );
-            }
-
-            for msg in &draft.conversations {
-                let is_selected = draft.selected_conversation == Some(msg.thread_id);
-                let preview = if msg.body.len() > 40 {
-                    format!("{}…", &msg.body[..40])
-                } else {
-                    msg.body.clone()
-                };
-                let sender = if msg.is_incoming() { msg.sender().to_string() } else { "Me".to_string() };
-
-                children.push(
-                    container(
-                        button::custom(
-                            row![
-                                text::caption(format!("{}: {}", sender, preview)).size(SIZE_CAPTION),
-                            ]
-                        )
-                        .on_press(Message::SelectConversation(device.id.clone(), msg.thread_id))
-                        .padding([6, 10])
-                        .width(Length::Fill)
-                    )
-                    .style(glass_card)
-                    .into(),
-                );
-
-                if is_selected {
-                    children.push(
-                        container(
-                            container(
-                                row![
-                                    text_input::text_input("Reply…", &draft.reply_text)
-                                        .on_input({
-                                            let did = device.id.clone();
-                                            move |v| Message::ReplyTextChanged(did.clone(), v)
-                                        })
-                                        .width(Length::Fill),
-                                    button::custom(text::caption("Send"))
-                                        .on_press(Message::SendReply(device.id.clone(), msg.thread_id))
-                                        .padding([6, 12]),
-                                ]
-                                .spacing(6),
-                            )
-                            .style(glass_card)
-                        )
-                        .padding([4, 0, 8, 0])
-                        .into(),
-                    );
-                }
-            }
-        }
 
         if device.is_reachable && device.has_plugin("kdeconnect_notifications") {
             children.push(divider::horizontal::default().into());
@@ -1428,51 +1343,6 @@ impl cosmic::Application for CosmicConnect {
                     },
                     |_| Message::RefreshDevices,
                 ).map(cosmic::Action::App);
-            }
-            Message::RefreshConversations(device_id) => {
-                let Some(backend) = self.backend.clone() else {
-                    self.draft_mut(&device_id).sms_busy = false;
-                    return Task::none();
-                };
-                self.draft_mut(&device_id).sms_busy = true;
-                let did = device_id.clone();
-                return Task::perform(
-                    async move {
-                        backend.request_all_conversations(&did).await;
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                        let convos = backend.active_conversations(&did).await;
-                        convos
-                    },
-                    move |convos| Message::ConversationsLoaded(device_id, convos),
-                )
-                .map(cosmic::Action::App);
-            }
-            Message::ConversationsLoaded(device_id, conversations) => {
-                let draft = self.draft_mut(&device_id);
-                draft.conversations = conversations;
-                draft.sms_busy = false;
-            }
-            Message::SelectConversation(device_id, thread_id) => {
-                let draft = self.draft_mut(&device_id);
-                draft.selected_conversation = Some(thread_id);
-                draft.reply_text.clear();
-            }
-            Message::ReplyTextChanged(device_id, text) => {
-                self.draft_mut(&device_id).reply_text = text;
-            }
-            Message::SendReply(device_id, thread_id) => {
-                let text = self.draft_mut(&device_id).reply_text.clone();
-                if text.trim().is_empty() {
-                    return Task::none();
-                }
-                self.draft_mut(&device_id).reply_text.clear();
-                log::debug!("SendReply: thread {thread_id}, {} chars", text.len());
-                let action = ActionType::ReplyToConversation(thread_id, text);
-                return Task::perform(
-                    async {},
-                    move |_| Message::PerformAction(device_id, action),
-                )
-                .map(cosmic::Action::App);
             }
             Message::RefreshNotifications(device_id) => {
                 let Some(backend) = self.backend.clone() else { return Task::none(); };
