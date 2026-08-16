@@ -16,6 +16,6 @@ zvariant = "5"
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
-rev = "417923fbafc0f38a63846b307036e4f20fc4960d"
+rev = "1f8d8786940cc6db59d412153c5a03f69a20375c"
 default-features = false
 features = ["applet", "tokio", "wayland"]

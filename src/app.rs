@@ -7,7 +7,8 @@ use ashpd::desktop::file_chooser::SelectedFiles;
 use cosmic::anim;
 use cosmic::app::Core;
 use cosmic::iced::core::Alignment;
-use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
+use cosmic::iced::platform_specific::shell::commands::popup::destroy_popup;
+use cosmic::surface;
 use cosmic::iced::time;
 use cosmic::iced::window::Id;
 use cosmic::iced::gradient;
@@ -899,8 +900,8 @@ impl CosmicConnect {
                 let max_alpha = 0.80;
                 let bg_alpha = max_alpha * eased;
                 let border_alpha = BORDER_GLASS_ALPHA * eased;
-                let base: Color = theme.cosmic().background.base.into();
-                let on: Color = theme.cosmic().background.on.into();
+                let base: Color = theme.cosmic().background(theme.transparent).base.into();
+                let on: Color = theme.cosmic().background(theme.transparent).on.into();
                 iced_container::Style {
                     background: Some(Background::Color(Color::from_rgba(
                         base.r * CARD_LUM_DARKEN,
@@ -938,31 +939,24 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
-        let window_id = core.main_window_id();
-        let blur_task = window_id
-            .map(|id| cosmic::iced::window::enable_blur::<Action<Self::Message>>(id))
-            .unwrap_or_else(Task::none);
-
         (
             Self {
                 core,
                 ..Default::default()
             },
-            blur_task.chain(
-                Task::perform(
-                    async {
-                        KdeConnectBackend::new()
-                            .await
-                            .map(Arc::new)
-                            .map_err(|e| format!("D-Bus: {e}"))
-                    },
-                    |result| match result {
-                        Ok(backend) => Message::BackendReady(backend),
-                        Err(error) => Message::BackendError(error),
-                    },
-                )
-                .map(cosmic::Action::App),
-            ),
+            Task::perform(
+                async {
+                    KdeConnectBackend::new()
+                        .await
+                        .map(Arc::new)
+                        .map_err(|e| format!("D-Bus: {e}"))
+                },
+                |result| match result {
+                    Ok(backend) => Message::BackendReady(backend),
+                    Err(error) => Message::BackendError(error),
+                },
+            )
+            .map(cosmic::Action::App),
         )
     }
 
@@ -976,26 +970,33 @@ impl cosmic::Application for CosmicConnect {
                 return if let Some(popup_id) = self.popup.take() {
                     destroy_popup(popup_id)
                 } else {
-                    let Some(parent_id) = self.popup_parent_id() else {
+                    if self.popup_parent_id().is_none() {
                         self.error = Some("Applet window not ready yet. Please try again.".into());
                         return Task::none();
-                    };
+                    }
 
-                    let new_id = Id::unique();
-                    self.popup.replace(new_id);
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        parent_id,
-                        new_id,
-                        Some((340, 500)),
+                    surface::surface_task(surface::action::app_popup(
+                        |_| surface::action::LiveSettings::default(),
+                        |app: &mut Self| {
+                            let parent_id = app.popup_parent_id().expect("checked before creating popup");
+                            let new_id = Id::unique();
+                            app.popup.replace(new_id);
+                            let mut popup_settings = app.core.applet.get_popup_settings(
+                                parent_id,
+                                new_id,
+                                Some((340, 500)),
+                                None,
+                                None,
+                            );
+                            popup_settings.positioner.size_limits = Limits::NONE
+                                .min_width(340.0)
+                                .max_width(360.0)
+                                .min_height(200.0)
+                                .max_height(750.0);
+                            popup_settings
+                        },
                         None,
-                        None,
-                    );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .min_width(340.0)
-                        .max_width(360.0)
-                        .min_height(200.0)
-                        .max_height(750.0);
-                    get_popup(popup_settings)
+                    ))
                 };
             }
             Message::RefreshDevices => {
@@ -1918,7 +1919,7 @@ impl cosmic::Application for CosmicConnect {
             row![]
         )
         .style(|theme: &cosmic::Theme| {
-            let on: Color = theme.cosmic().background.on.into();
+            let on: Color = theme.cosmic().background(theme.transparent).on.into();
             iced_container::Style {
                 background: Some(Background::Gradient(Gradient::Linear(
                     gradient::Linear::new(std::f32::consts::PI)
@@ -1947,13 +1948,18 @@ impl cosmic::Application for CosmicConnect {
             container(panel)
                 .style(|theme: &cosmic::Theme| {
                     let c = theme.cosmic();
-                    let base: Color = c.background.base.into();
-                    let on: Color = c.background.on.into();
+                    let base: Color = c.background(theme.transparent).base.into();
+                    let on: Color = c.background(theme.transparent).on.into();
+                    let (a0, a1, a2) = if self.core.frosted(c) {
+                        (0.35, 0.45, 0.55)
+                    } else {
+                        (0.72, 0.85, 0.92)
+                    };
                     let bg = Background::Gradient(Gradient::Linear(
                         gradient::Linear::new(std::f32::consts::PI)
-                            .add_stop(0.0, Color::from_rgba(base.r, base.g, base.b, 0.72))
-                            .add_stop(0.5, Color::from_rgba(base.r * 0.96, base.g * 0.96, base.b * 0.96, 0.85))
-                            .add_stop(1.0, Color::from_rgba(base.r * 0.92, base.g * 0.92, base.b * 0.92, 0.92)),
+                            .add_stop(0.0, Color::from_rgba(base.r, base.g, base.b, a0))
+                            .add_stop(0.5, Color::from_rgba(base.r * 0.96, base.g * 0.96, base.b * 0.96, a1))
+                            .add_stop(1.0, Color::from_rgba(base.r * 0.92, base.g * 0.92, base.b * 0.92, a2)),
                     ));
                     iced_container::Style {
                         background: Some(bg),

@@ -41,16 +41,16 @@ pub const SHADOW_CARD_ALPHA: f32 = 0.20;
 pub const SHADOW_PANEL_ALPHA: f32 = 0.30;
 
 pub fn frosted_bg(theme: &cosmic::Theme, lum: f32, alpha: f32) -> Color {
-    let base: Color = theme.cosmic().background.base.into();
+    let base: Color = theme.cosmic().background(theme.transparent).base.into();
     Color::from_rgba(base.r * lum, base.g * lum, base.b * lum, alpha)
 }
 
 pub fn on_color(theme: &cosmic::Theme) -> Color {
-    theme.cosmic().background.on.into()
+    theme.cosmic().background(theme.transparent).on.into()
 }
 
 pub fn on_overlay(theme: &cosmic::Theme, alpha: f32) -> Color {
-    let on: Color = theme.cosmic().background.on.into();
+    let on: Color = theme.cosmic().background(theme.transparent).on.into();
     Color::from_rgba(on.r, on.g, on.b, alpha)
 }
 
