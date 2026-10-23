@@ -13,7 +13,13 @@ async fn main() {
         }
     };
 
-    let devices = backend.devices().await;
+    let devices = match backend.devices().await {
+        Ok(devices) => devices,
+        Err(e) => {
+            eprintln!("ERROR: Failed to list KDE Connect devices: {e}");
+            process::exit(1);
+        }
+    };
 
     if devices.is_empty() {
         println!("No paired devices found.");
