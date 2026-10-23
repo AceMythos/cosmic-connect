@@ -13,7 +13,7 @@ Star the repo if you use it.
 <table>
   <tr>
     <td><b>Applet in the panel</b></td>
-    <td><b>Popup with device controls</b></td>
+    <td><b>Popup with status, quick actions, notifications, and sharing</b></td>
   </tr>
   <tr>
     <td><a href="screenshots/panel.jpeg"><img src="screenshots/panel.jpeg" width="250"></a></td>
@@ -23,12 +23,15 @@ Star the repo if you use it.
 
 ## Features
 
-- View paired devices with connection status and battery level
-- Ping your phone to find it
-- Push and pull clipboard text
-- Share files, URLs, and text snippets
+- View paired devices with reachability, battery, cellular network, and signal
+- Switch between paired devices from the popup
+- Ring or ping your phone to find it
+- See now-playing media info
+- Expand, dismiss, and reply to phone notifications
+- Send clipboard text, files, text snippets, and URLs
+- Receive files with transfer progress and open them
 - Browse device files over SFTP
-- Accept pairing requests
+- Accept pairing requests and unpair with confirmation
 
 All actions route through D-Bus to the KDE Connect daemon. You need KDE Connect on both ends.
 
