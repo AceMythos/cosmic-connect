@@ -53,7 +53,7 @@ installs it system-wide, builds the applet, and restarts the daemon.
 sudo apt install cmake extra-cmake-modules libkf5kio-dev \
     libkf5notifications-dev libkf5dbusaddons-dev libkf5config-dev \
     libkf5coreaddons-dev libkf5i18n-dev qtbase5-dev qttools5-dev \
-    git build-essential wl-clipboard
+    git build-essential wl-clipboard sshfs
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
@@ -73,6 +73,7 @@ pgrep -a kdeconnectd
 
 - Rust 1.70+, libcosmic, D-Bus, wl-paste
 - Build deps: `cmake extra-cmake-modules libkf5kio-dev libkf5notifications-dev libkf5dbusaddons-dev libkf5config-dev libkf5coreaddons-dev libkf5i18n-dev qtbase5-dev qttools5-dev`
+- Runtime deps: `sshfs` for file browsing, `wl-clipboard` for clipboard support
 
 <details>
 <summary>Patched KDE Connect fork internals</summary>

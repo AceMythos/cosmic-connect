@@ -11,7 +11,7 @@ deps:
 	sudo apt-get install -y cmake extra-cmake-modules libkf5kio-dev \
 		libkf5notifications-dev libkf5dbusaddons-dev libkf5config-dev \
 		libkf5coreaddons-dev libkf5i18n-dev qtbase5-dev qttools5-dev \
-		git build-essential wl-clipboard
+		git build-essential wl-clipboard sshfs
 	@if ! command -v cargo >/dev/null 2>&1; then \
 		echo "=== Installing Rust ==="; \
 		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; \
