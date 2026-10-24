@@ -15,8 +15,10 @@ use cosmic::iced::gradient;
 use cosmic::iced::{Background, Border, Color, Gradient, Length, Limits, Shadow, Subscription, Vector};
 use cosmic::widget::text_input;
 use cosmic::widget::autosize::autosize;
+use cosmic::cosmic_config::{Config as CosmicConfig, ConfigGet, ConfigSet};
 use cosmic::widget::{
-    button, column, container, divider, icon, progress_bar, row, scrollable, text,
+    button, column, container, divider, icon, progress_bar, row, scrollable, settings, text,
+    toggler, tooltip,
 };
 use cosmic::widget::container as iced_container;
 use cosmic::theme;
@@ -46,6 +48,8 @@ const MAX_RECEIVED_HISTORY: usize = 50;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(6);
 const DISCOVERY_INTERVAL_OPEN: Duration = Duration::from_secs(30);
 const DISCOVERY_INTERVAL_CLOSED: Duration = Duration::from_secs(120);
+const CONFIG_VERSION: u64 = 1;
+const COMPACT_PANEL_KEY: &str = "compact_panel";
 
 static POPUP_AUTOSIZE_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("cosmic-connect-popup"));
@@ -98,6 +102,7 @@ pub struct CosmicConnect {
     notified_pair_ids: HashSet<String>,
     pairing_notifs: HashMap<u32, String>,
     last_sync: Option<Instant>,
+    compact_panel: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +137,7 @@ pub enum Message {
     ConfirmUnpair,
     ToggleAdvanced(String),
     ToggleDeviceList,
+    SetCompactPanel(bool),
     ToggleNotifications(String),
     ToggleShare(String, ShareKind),
     SendShareText(String),
@@ -170,6 +176,39 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
         out.push('…');
     }
     out
+}
+
+fn load_compact_panel() -> bool {
+    match CosmicConfig::new(ID, CONFIG_VERSION) {
+        Ok(config) => match config.get::<bool>(COMPACT_PANEL_KEY) {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                if error.is_err() {
+                    log::warn!("Failed to load compact panel setting: {error}");
+                }
+                false
+            }
+        },
+        Err(error) => {
+            if error.is_err() {
+                log::warn!("Failed to open applet config: {error}");
+            }
+            false
+        }
+    }
+}
+
+fn save_compact_panel(enabled: bool) {
+    match CosmicConfig::new(ID, CONFIG_VERSION) {
+        Ok(config) => match config.set(COMPACT_PANEL_KEY, enabled) {
+            Ok(()) => log::info!(
+                "Panel display set to {}",
+                if enabled { "compact" } else { "detailed" }
+            ),
+            Err(error) => log::warn!("Failed to save compact panel setting: {error}"),
+        },
+        Err(error) => log::warn!("Failed to open applet config: {error}"),
+    }
 }
 
 fn parse_device_signal_path(path: &str) -> Option<(&str, &str)> {
@@ -249,6 +288,23 @@ impl CosmicConnect {
         self.selected_device_id
             .as_deref()
             .and_then(|id| self.devices.iter().find(|d| d.id == *id))
+    }
+
+    fn render_panel_settings(&self) -> Element<'_, Message> {
+        container(
+            column![
+                settings::item(
+                    "Compact panel",
+                    toggler(self.compact_panel).on_toggle(Message::SetCompactPanel),
+                ),
+                text::caption("Show only the device icon in the panel. Details stay in the popup.")
+                    .size(SIZE_CAPTION),
+            ]
+            .spacing(4),
+        )
+        .padding([12, 0, 4, 0])
+        .width(Length::Fill)
+        .into()
     }
 
     fn render_device_selector(&self) -> Element<'_, Message> {
@@ -987,6 +1043,7 @@ impl cosmic::Application for CosmicConnect {
         (
             Self {
                 core,
+                compact_panel: load_compact_panel(),
                 ..Default::default()
             },
             Task::perform(
@@ -1780,6 +1837,10 @@ impl cosmic::Application for CosmicConnect {
             Message::ToggleDeviceList => {
                 self.device_list_open = !self.device_list_open;
             }
+            Message::SetCompactPanel(enabled) => {
+                self.compact_panel = enabled;
+                save_compact_panel(enabled);
+            }
             Message::ToggleNotifications(device_id) => {
                 let draft = self.draft_mut(&device_id);
                 draft.show_all_notifications = !draft.show_all_notifications;
@@ -1879,39 +1940,68 @@ impl cosmic::Application for CosmicConnect {
 
     fn view(&self) -> Element<'_, Self::Message> {
         let suggested = self.core.applet.suggested_size(false);
-        let icon_name = if self.selected_device().map(|d| d.is_reachable).unwrap_or(false) {
+        let reachable = self
+            .selected_device()
+            .map(|device| device.is_reachable)
+            .unwrap_or(false);
+        let unread: usize = self
+            .received_files
+            .values()
+            .flat_map(|files| files.iter())
+            .filter(|file| file.unread)
+            .count();
+
+        if self.compact_panel {
+            let icon_name = self
+                .selected_device()
+                .map(|device| device.device_type.icon_name())
+                .unwrap_or("phone-symbolic");
+            let icon = icon::from_name(icon_name).size(suggested.1.saturating_sub(4));
+            let button = self
+                .core
+                .applet
+                .button_from_element(icon, true)
+                .on_press_down(Message::TogglePopup);
+
+            let mut tooltip_label = self.panel_preview();
+            if unread > 0 {
+                tooltip_label.push_str(&format!(" - {unread} unread"));
+            }
+            let tooltip_text = text::caption(tooltip_label).size(SIZE_CAPTION);
+
+            return self
+                .core
+                .applet
+                .autosize_window(tooltip(button, tooltip_text, tooltip::Position::Top))
+                .into();
+        }
+
+        let icon_name = if reachable {
             "io.github.acemythos.Connect-symbolic"
         } else {
             "io.github.acemythos.Connect-off-symbolic"
         };
-        let icon = icon::from_name(icon_name)
-            .size(suggested.1.saturating_sub(4));
+        let icon = icon::from_name(icon_name).size(suggested.1.saturating_sub(4));
 
-        let unread: usize = self.received_files.values()
-            .flat_map(|v| v.iter())
-            .filter(|f| f.unread)
-            .count();
+        let preview = text::caption(self.panel_preview()).size(SIZE_CAPTION);
+        let mut content = row![icon, preview]
+            .spacing(6)
+            .align_y(Alignment::Center);
 
-    let preview = text::caption(self.panel_preview()).size(SIZE_CAPTION);
-    let mut content = row![icon, preview]
-        .spacing(6)
-        .align_y(Alignment::Center);
+        if unread > 0 {
+            content = content.push(text::caption(format!("({unread})")).size(SIZE_CAPTION));
+        }
 
-    if unread > 0 {
-        content = content.push(
-            text::caption(format!("({unread})")).size(SIZE_CAPTION)
-        );
-    }
+        let coated = container(content)
+            .padding([5, 8, 0, 8])
+            .style(glass_coating_style);
 
-    let coated = container(content)
-        .padding([5, 8, 0, 8])
-        .style(glass_coating_style);
-
-    let btn = self.core
-        .applet
-        .button_from_element(coated, true)
-        .width(Length::Shrink)
-        .on_press_down(Message::TogglePopup);
+        let btn = self
+            .core
+            .applet
+            .button_from_element(coated, true)
+            .width(Length::Shrink)
+            .on_press_down(Message::TogglePopup);
 
         self.core.applet.autosize_window(btn).into()
     }
@@ -2073,6 +2163,9 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
         }
+
+        content.push(divider::horizontal::default().into());
+        content.push(self.render_panel_settings());
 
         let body = column::with_children(content).spacing(0);
 

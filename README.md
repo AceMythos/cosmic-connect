@@ -24,6 +24,7 @@ Star the repo if you use it.
 ## Features
 
 - View paired devices with reachability, battery, cellular network, and signal
+- Switch between a detailed panel readout and an icon-only panel view
 - Switch between paired devices from the popup
 - Ring or ping your phone to find it
 - See now-playing media info
