@@ -1104,7 +1104,7 @@ impl cosmic::Application for CosmicConnect {
                 for old in &self.devices {
                     if let Some(new) = merged.iter().find(|d| d.id == old.id) {
                         if old.is_reachable != new.is_reachable {
-                            log::debug!("Device '{}' {} (paired={})", new.name, if new.is_reachable { "became reachable" } else { "became unreachable" }, new.is_paired);
+                            log::info!("Device '{}' {} (paired={})", new.name, if new.is_reachable { "became reachable" } else { "became unreachable" }, new.is_paired);
                         }
                     } else {
                         log::debug!("Device '{}' removed", old.name);

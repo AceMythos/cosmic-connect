@@ -39,9 +39,12 @@ impl KdeConnectBackend {
         &self.conn
     }
 
-    /// Reuse one properties-cached proxy per D-Bus object. The first property read
-    /// performs a single `GetAll`; later reads are cache hits kept fresh by
-    /// `PropertiesChanged`.
+    /// Reuse one proxy per D-Bus object, but do not cache property values.
+    ///
+    /// KDE Connect exposes properties through QtDBus without emitting
+    /// `PropertiesChanged`, so a cached proxy would keep stale values such as
+    /// `isReachable` until the cache is rebuilt. Reading properties live keeps
+    /// the 2-second poll accurate while still avoiding repeated proxy creation.
     async fn proxy(&self, path: String, interface: &'static str) -> Result<Proxy<'static>> {
         let key = format!("{path}\u{0}{interface}");
 
@@ -55,7 +58,13 @@ impl KdeConnectBackend {
             return Ok(proxy);
         }
 
-        let proxy = Proxy::new_owned(self.conn.clone(), KDE_CONNECT_SERVICE, path, interface).await?;
+        let proxy: Proxy<'static> = zbus::proxy::Builder::new(&self.conn)
+            .destination(KDE_CONNECT_SERVICE)?
+            .path(path)?
+            .interface(interface)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
         self.proxies
             .lock()
             .expect("proxy cache poisoned")
