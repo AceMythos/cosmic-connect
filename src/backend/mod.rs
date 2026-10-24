@@ -498,6 +498,10 @@ impl KdeConnectBackend {
                 self.media_action(device_id, action).await?;
                 Ok(format!("Media action '{action}' sent"))
             }
+            ActionType::Seek(position) => {
+                self.set_position(device_id, *position).await?;
+                Ok("Playback position updated".into())
+            }
             ActionType::SelectPlayer(ref player) => {
                 self.select_player(device_id, player).await?;
                 Ok(format!("Player '{player}' selected"))
@@ -606,6 +610,11 @@ impl KdeConnectBackend {
             .await
             .ok()?;
 
+        // KDE Connect exposes these MPRIS values as D-Bus `i` (i32), while
+        // PlayerInfo stores milliseconds as i64 for the UI.
+        let length: i32 = proxy.get_property("length").await.ok().unwrap_or_default();
+        let position: i32 = proxy.get_property("position").await.ok().unwrap_or_default();
+
         Some(PlayerInfo {
             player: proxy.get_property("player").await.ok().unwrap_or_default(),
             title: proxy.get_property("title").await.ok().unwrap_or_default(),
@@ -613,8 +622,8 @@ impl KdeConnectBackend {
             album: proxy.get_property("album").await.ok().unwrap_or_default(),
             is_playing: proxy.get_property("isPlaying").await.ok().unwrap_or_default(),
             can_seek: proxy.get_property("canSeek").await.ok().unwrap_or_default(),
-            length: proxy.get_property("length").await.ok().unwrap_or_default(),
-            position: proxy.get_property("position").await.ok().unwrap_or_default(),
+            length: i64::from(length),
+            position: i64::from(position),
             volume: proxy.get_property("volume").await.ok().unwrap_or_default(),
             player_list: proxy.get_property("playerList").await.ok().unwrap_or_default(),
         })
@@ -626,6 +635,21 @@ impl KdeConnectBackend {
             Some(KDE_CONNECT_SERVICE), p.as_str(),
             Some("org.kde.kdeconnect.device.mprisremote"), "sendAction", &(action,),
         ).await.map(|_| ())
+    }
+
+    pub async fn set_position(&self, device_id: &str, position_ms: i64) -> Result<()> {
+        let p = Self::plugin_path(device_id, "mprisremote");
+        let proxy = Proxy::new(
+            &self.conn,
+            KDE_CONNECT_SERVICE,
+            p.as_str(),
+            "org.kde.kdeconnect.device.mprisremote",
+        ).await?;
+        // `position` is a writable D-Bus `i` property in milliseconds. Writing
+        // it sends SetPosition to the phone.
+        let position_ms = position_ms.clamp(0, i32::MAX as i64) as i32;
+        proxy.set_property("position", position_ms).await?;
+        Ok(())
     }
 
     pub async fn select_player(&self, device_id: &str, player: &str) -> Result<()> {

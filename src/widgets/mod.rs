@@ -5,7 +5,7 @@ use cosmic::widget::button;
 use cosmic::widget::container as iced_container;
 use cosmic::widget::tooltip;
 use cosmic::widget::{icon, text};
-use cosmic::{Element, iced};
+use cosmic::{iced, Element};
 
 // --- Design Tokens ---
 
@@ -100,11 +100,7 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
 
         let mut row = iced::widget::row![
             icon::from_name(icon_name).size(16),
-            iced::widget::column![
-                label_elem,
-                text::caption(sub).size(SIZE_CAPTION),
-            ]
-            .spacing(1),
+            iced::widget::column![label_elem, text::caption(sub).size(SIZE_CAPTION),].spacing(1),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -125,8 +121,16 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                 iced_container::Style {
                     background: Some(Background::Color(frosted_bg(
                         theme,
-                        if selected { CARD_LUM_HOVER } else { CARD_LUM_DARKEN },
-                        if selected { OPACITY_CARD_HOVER } else { OPACITY_CARD },
+                        if selected {
+                            CARD_LUM_HOVER
+                        } else {
+                            CARD_LUM_DARKEN
+                        },
+                        if selected {
+                            OPACITY_CARD_HOVER
+                        } else {
+                            OPACITY_CARD
+                        },
                     ))),
                     border: Border {
                         radius: RADIUS_LG.into(),
@@ -168,21 +172,33 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
                     background: None,
                     border_radius: 0.0.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 hovered: Box::new(|focused, theme| button::Style {
                     background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                     border_radius: 0.0.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 pressed: Box::new(|focused, theme| button::Style {
                     background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                     border_radius: 0.0.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 disabled: Box::new(|_theme| button::Style {
@@ -198,8 +214,22 @@ pub fn device_selector_card<'a, Message: Clone + 'static>(
     }
 
     iced::widget::row![
-        make_card(local_icon, local_label, local_sub.to_string(), false, false, None),
-        make_card(remote_icon, remote_label, remote_sub, true, on_select.is_some(), on_select),
+        make_card(
+            local_icon,
+            local_label,
+            local_sub.to_string(),
+            false,
+            false,
+            None
+        ),
+        make_card(
+            remote_icon,
+            remote_label,
+            remote_sub,
+            true,
+            on_select.is_some(),
+            on_select
+        ),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
@@ -249,26 +279,36 @@ pub fn pill_button<'a, Message: Clone + 'static>(
             background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
             border_radius: RADIUS_PILL.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
         pressed: Box::new(|focused, theme| button::Style {
             background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
             border_radius: RADIUS_PILL.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
-        disabled: Box::new(|theme| {
-            button::Style {
-                background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
-                border_radius: RADIUS_PILL.into(),
-                border_width: 0.0,
-                border_color: Color::TRANSPARENT,
-                text_color: Some(on_overlay(theme, 0.4)),
-                icon_color: Some(on_overlay(theme, 0.4)),
-                ..button::Style::new()
-            }
+        disabled: Box::new(|theme| button::Style {
+            background: Some(Background::Color(frosted_bg(
+                theme,
+                CARD_LUM_DARKEN,
+                OPACITY_CARD,
+            ))),
+            border_radius: RADIUS_PILL.into(),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+            text_color: Some(on_overlay(theme, 0.4)),
+            icon_color: Some(on_overlay(theme, 0.4)),
+            ..button::Style::new()
         }),
     })
     .padding([8, 14])
@@ -295,7 +335,11 @@ pub fn text_button<'a, Message: Clone + 'static>(
                 background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                 border_radius: RADIUS_SM.into(),
                 border_width: if focused { 1.0 } else { 0.0 },
-                border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
                 text_color: Some(on_color(theme)),
                 ..button::Style::new()
             }),
@@ -303,7 +347,11 @@ pub fn text_button<'a, Message: Clone + 'static>(
                 background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                 border_radius: RADIUS_SM.into(),
                 border_width: if focused { 1.0 } else { 0.0 },
-                border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
                 text_color: Some(on_color(theme)),
                 ..button::Style::new()
             }),
@@ -338,7 +386,11 @@ pub fn danger_button<'a, Message: Clone + 'static>(
         active: Box::new(|focused, theme| {
             let danger = destructive_color(theme);
             button::Style {
-                background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
+                background: Some(Background::Color(frosted_bg(
+                    theme,
+                    CARD_LUM_DARKEN,
+                    OPACITY_CARD,
+                ))),
                 border_radius: RADIUS_PILL.into(),
                 border_width: 1.0,
                 border_color: if focused { accent_color(theme) } else { danger },
@@ -402,7 +454,11 @@ pub fn icon_button<'a, Message: Clone + 'static>(
                 background: None,
                 border_radius: RADIUS_SM.into(),
                 border_width: if focused { 1.0 } else { 0.0 },
-                border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
                 text_color: Some(on_color(theme)),
                 icon_color: Some(on_color(theme)),
                 ..button::Style::new()
@@ -411,7 +467,11 @@ pub fn icon_button<'a, Message: Clone + 'static>(
                 background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                 border_radius: RADIUS_SM.into(),
                 border_width: if focused { 1.0 } else { 0.0 },
-                border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
                 icon_color: Some(on_color(theme)),
                 ..button::Style::new()
             }),
@@ -419,7 +479,11 @@ pub fn icon_button<'a, Message: Clone + 'static>(
                 background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                 border_radius: RADIUS_SM.into(),
                 border_width: if focused { 1.0 } else { 0.0 },
-                border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
                 icon_color: Some(on_color(theme)),
                 ..button::Style::new()
             }),
@@ -437,7 +501,7 @@ pub fn icon_button<'a, Message: Clone + 'static>(
     tooltip(btn, tooltip_label, tooltip::Position::Top).into()
 }
 
-fn battery_icon(charge: i32, charging: bool) -> &'static str {
+pub fn battery_icon(charge: i32, charging: bool) -> &'static str {
     let base = if charge <= 5 {
         "battery-empty"
     } else if charge <= 20 {
@@ -463,7 +527,7 @@ fn battery_icon(charge: i32, charging: bool) -> &'static str {
     }
 }
 
-fn network_icon(network_type: &str) -> &'static str {
+pub fn network_icon(network_type: &str) -> &'static str {
     match network_type.to_ascii_uppercase().as_str() {
         "5G" => "network-cellular-5g-symbolic",
         "4G" | "LTE" => "network-cellular-4g-symbolic",
@@ -473,7 +537,7 @@ fn network_icon(network_type: &str) -> &'static str {
     }
 }
 
-fn signal_icon(strength: i32) -> &'static str {
+pub fn signal_icon(strength: i32) -> &'static str {
     match strength.clamp(0, 4) {
         4 => "network-cellular-signal-excellent-symbolic",
         3 => "network-cellular-signal-good-symbolic",
@@ -534,24 +598,18 @@ pub fn status_card<'a, Message: Clone + 'static>(
         );
     }
 
-    let mut info = iced::widget::column![
-        text::body(name).size(SIZE_HEADING),
-        status_row,
-    ]
-    .spacing(3)
-    .width(Length::Fill);
+    let mut info = iced::widget::column![text::body(name).size(SIZE_HEADING), status_row,]
+        .spacing(3)
+        .width(Length::Fill);
 
     if has_metrics {
         info = info.push(metrics);
     }
 
-    let mut header = iced::widget::row![
-        icon::from_name(icon_name).size(20),
-        info,
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
+    let mut header = iced::widget::row![icon::from_name(icon_name).size(20), info,]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
 
     if on_toggle.is_some() {
         header = header.push(icon::from_name("pan-down-symbolic").size(14));
@@ -565,21 +623,33 @@ pub fn status_card<'a, Message: Clone + 'static>(
                     background: None,
                     border_radius: RADIUS_MD.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 hovered: Box::new(|focused, theme| button::Style {
                     background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                     border_radius: RADIUS_MD.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 pressed: Box::new(|focused, theme| button::Style {
                     background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                     border_radius: RADIUS_MD.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 disabled: Box::new(|_theme| button::Style {
@@ -594,30 +664,37 @@ pub fn status_card<'a, Message: Clone + 'static>(
             .width(Length::Fill)
             .into()
     } else {
-        iced_container(header).padding([4, 4]).width(Length::Fill).into()
+        iced_container(header)
+            .padding([4, 4])
+            .width(Length::Fill)
+            .into()
     };
 
-    let mut card_row = iced::widget::row![main].spacing(4).align_y(Alignment::Center);
+    let mut card_row = iced::widget::row![main]
+        .spacing(4)
+        .align_y(Alignment::Center);
     if let Some(msg) = on_refresh {
         card_row = card_row.push(icon_button("view-refresh-symbolic", "Refresh status", msg));
     }
 
     iced_container(card_row)
-        .class(theme::Container::custom(|theme| {
-            iced_container::Style {
-                background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
-                border: Border {
-                    radius: RADIUS_LG.into(),
-                    width: 1.0,
-                    color: on_overlay(theme, BORDER_GLASS_ALPHA),
-                },
-                shadow: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_CARD_ALPHA),
-                    offset: Vector::new(0.0, 2.0),
-                    blur_radius: RADIUS_MD,
-                },
-                ..Default::default()
-            }
+        .class(theme::Container::custom(|theme| iced_container::Style {
+            background: Some(Background::Color(frosted_bg(
+                theme,
+                CARD_LUM_DARKEN,
+                OPACITY_CARD,
+            ))),
+            border: Border {
+                radius: RADIUS_LG.into(),
+                width: 1.0,
+                color: on_overlay(theme, BORDER_GLASS_ALPHA),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, SHADOW_CARD_ALPHA),
+                offset: Vector::new(0.0, 2.0),
+                blur_radius: RADIUS_MD,
+            },
+            ..Default::default()
         }))
         .padding([10, 12])
         .width(Length::Fill)
@@ -640,16 +717,18 @@ pub fn info_banner<'a, Message: 'static>(
         .spacing(10)
         .align_y(Alignment::Center),
     )
-    .class(theme::Container::custom(|theme| {
-        iced_container::Style {
-            background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_BANNER))),
-            border: Border {
-                radius: RADIUS_MD.into(),
-                width: 1.0,
-                color: on_overlay(theme, BORDER_GLASS_ALPHA),
-            },
-            ..Default::default()
-        }
+    .class(theme::Container::custom(|theme| iced_container::Style {
+        background: Some(Background::Color(frosted_bg(
+            theme,
+            CARD_LUM_DARKEN,
+            OPACITY_BANNER,
+        ))),
+        border: Border {
+            radius: RADIUS_MD.into(),
+            width: 1.0,
+            color: on_overlay(theme, BORDER_GLASS_ALPHA),
+        },
+        ..Default::default()
     }))
     .padding([10, 14])
     .width(Length::Fill)
@@ -677,21 +756,33 @@ pub fn list_row<'a, Message: Clone + 'static>(
             background: None,
             border_radius: RADIUS_CARD.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
         hovered: Box::new(|focused, theme| button::Style {
             background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
             border_radius: RADIUS_CARD.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
         pressed: Box::new(|focused, theme| button::Style {
             background: Some(Background::Color(on_overlay(theme, PRESSED_SUBTLE_ALPHA))),
             border_radius: RADIUS_CARD.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
         disabled: Box::new(|theme| button::Style {
@@ -720,7 +811,7 @@ pub fn quick_action_btn<'a, Message: Clone + 'static>(
             icon::from_name(icon_name).size(22),
             text::caption(label).size(SIZE_CAPTION),
         ]
-        .spacing(2)
+        .spacing(3)
         .align_x(Alignment::Center),
     )
     .on_press(message)
@@ -728,22 +819,38 @@ pub fn quick_action_btn<'a, Message: Clone + 'static>(
         active: Box::new(move |focused, theme| {
             let accent = accent_color(theme);
             button::Style {
-                background: None,
+                background: Some(Background::Color(frosted_bg(
+                    theme,
+                    CARD_LUM_DARKEN,
+                    OPACITY_CARD,
+                ))),
                 border_radius: RADIUS_MD.into(),
-                border_width: if focused || is_active { 1.0 } else { 0.0 },
-                border_color: if focused || is_active { accent } else { Color::TRANSPARENT },
+                border_width: 1.0,
+                border_color: if focused || is_active {
+                    accent
+                } else {
+                    on_overlay(theme, BORDER_GLASS_ALPHA)
+                },
                 text_color: is_active.then_some(accent),
-                icon_color: is_active.then_some(accent),
+                icon_color: Some(if is_active { accent } else { on_color(theme) }),
                 ..button::Style::new()
             }
         }),
         hovered: Box::new(move |focused, theme| {
             let accent = accent_color(theme);
             button::Style {
-                background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
+                background: Some(Background::Color(frosted_bg(
+                    theme,
+                    CARD_LUM_HOVER,
+                    OPACITY_CARD_HOVER,
+                ))),
                 border_radius: RADIUS_MD.into(),
                 border_width: 1.0,
-                border_color: if focused || is_active { accent } else { on_overlay(theme, BORDER_GLASS_ALPHA) },
+                border_color: if focused || is_active {
+                    accent
+                } else {
+                    on_overlay(theme, BORDER_GLASS_ALPHA)
+                },
                 text_color: is_active.then_some(accent),
                 icon_color: Some(if is_active { accent } else { on_color(theme) }),
                 ..button::Style::new()
@@ -752,23 +859,186 @@ pub fn quick_action_btn<'a, Message: Clone + 'static>(
         pressed: Box::new(|focused, theme| button::Style {
             background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
             border_radius: RADIUS_MD.into(),
-            border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_width: 1.0,
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                on_overlay(theme, BORDER_GLASS_ALPHA)
+            },
+            icon_color: Some(on_color(theme)),
             ..button::Style::new()
         }),
         disabled: Box::new(|theme| button::Style {
-            background: None,
+            background: Some(Background::Color(frosted_bg(
+                theme,
+                CARD_LUM_DARKEN,
+                OPACITY_CARD,
+            ))),
             border_radius: RADIUS_MD.into(),
-            border_width: 0.0,
-            border_color: Color::TRANSPARENT,
+            border_width: 1.0,
+            border_color: on_overlay(theme, BORDER_GLASS_ALPHA),
             text_color: Some(on_overlay(theme, 0.4)),
             icon_color: Some(on_overlay(theme, 0.4)),
             ..button::Style::new()
         }),
     })
-    .padding([8, 12])
-    .width(Length::Shrink)
+    .padding([9, 8])
+    .width(Length::Fill)
     .into()
+}
+
+pub fn media_button<'a, Message: Clone + 'static>(
+    icon_name: &'a str,
+    tooltip_label: &'a str,
+    message: Message,
+    primary: bool,
+) -> Element<'a, Message> {
+    let btn = button::custom(icon::from_name(icon_name).size(18))
+        .on_press(message)
+        .class(theme::Button::Custom {
+            active: Box::new(move |focused, theme| {
+                let accent = accent_color(theme);
+                let (bg, border) = if primary {
+                    (
+                        Color::from_rgba(accent.r, accent.g, accent.b, 0.18),
+                        Color::from_rgba(accent.r, accent.g, accent.b, 0.45),
+                    )
+                } else {
+                    (
+                        frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD),
+                        on_overlay(theme, BORDER_GLASS_ALPHA),
+                    )
+                };
+                button::Style {
+                    background: Some(Background::Color(bg)),
+                    border_radius: RADIUS_PILL.into(),
+                    border_width: 1.0,
+                    border_color: if focused { accent } else { border },
+                    icon_color: Some(if primary { accent } else { on_color(theme) }),
+                    ..button::Style::new()
+                }
+            }),
+            hovered: Box::new(move |_focused, theme| {
+                let accent = accent_color(theme);
+                button::Style {
+                    background: Some(Background::Color(if primary {
+                        Color::from_rgba(accent.r, accent.g, accent.b, 0.26)
+                    } else {
+                        frosted_bg(theme, CARD_LUM_HOVER, OPACITY_CARD_HOVER)
+                    })),
+                    border_radius: RADIUS_PILL.into(),
+                    border_width: 1.0,
+                    border_color: if primary {
+                        Color::from_rgba(accent.r, accent.g, accent.b, 0.55)
+                    } else {
+                        on_overlay(theme, BORDER_GLASS_ALPHA)
+                    },
+                    icon_color: Some(if primary { accent } else { on_color(theme) }),
+                    ..button::Style::new()
+                }
+            }),
+            pressed: Box::new(|_focused, theme| button::Style {
+                background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
+                border_radius: RADIUS_PILL.into(),
+                border_width: 1.0,
+                border_color: on_overlay(theme, BORDER_GLASS_ALPHA),
+                icon_color: Some(on_color(theme)),
+                ..button::Style::new()
+            }),
+            disabled: Box::new(|theme| button::Style {
+                background: Some(Background::Color(frosted_bg(
+                    theme,
+                    CARD_LUM_DARKEN,
+                    OPACITY_CARD,
+                ))),
+                border_radius: RADIUS_PILL.into(),
+                border_width: 1.0,
+                border_color: on_overlay(theme, BORDER_GLASS_ALPHA),
+                icon_color: Some(on_overlay(theme, 0.4)),
+                ..button::Style::new()
+            }),
+        })
+        .padding([7, 10]);
+
+    tooltip(btn, tooltip_label, tooltip::Position::Top).into()
+}
+
+pub fn nav_row<'a, Message: Clone + 'static>(
+    icon_name: &'a str,
+    label: String,
+    trailing: String,
+    message: Message,
+) -> Element<'a, Message> {
+    let mut content = iced::widget::row![
+        icon::from_name(icon_name).size(16),
+        text::body(label).size(SIZE_BODY),
+    ]
+    .spacing(9)
+    .align_y(Alignment::Center);
+
+    content = content.push(iced::widget::container(iced::widget::row![]).width(Length::Fill));
+    if !trailing.is_empty() {
+        content = content.push(text::caption(trailing).size(SIZE_CAPTION));
+    }
+    content = content.push(icon::from_name("pan-end-symbolic").size(14));
+
+    let btn = button::custom(content)
+        .on_press(message)
+        .class(theme::Button::Custom {
+            active: Box::new(|focused, theme| button::Style {
+                background: None,
+                border_radius: RADIUS_CARD.into(),
+                border_width: if focused { 1.0 } else { 0.0 },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
+                ..button::Style::new()
+            }),
+            hovered: Box::new(|focused, theme| button::Style {
+                background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
+                border_radius: RADIUS_CARD.into(),
+                border_width: if focused { 1.0 } else { 0.0 },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
+                ..button::Style::new()
+            }),
+            pressed: Box::new(|focused, theme| button::Style {
+                background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
+                border_radius: RADIUS_CARD.into(),
+                border_width: if focused { 1.0 } else { 0.0 },
+                border_color: if focused {
+                    accent_color(theme)
+                } else {
+                    Color::TRANSPARENT
+                },
+                ..button::Style::new()
+            }),
+            disabled: Box::new(|_theme| button::Style::new()),
+        })
+        .padding([10, 12])
+        .width(Length::Fill);
+
+    iced_container(btn)
+        .class(theme::Container::custom(|theme| iced_container::Style {
+            background: Some(Background::Color(frosted_bg(
+                theme,
+                CARD_LUM_DARKEN,
+                OPACITY_CARD,
+            ))),
+            border: Border {
+                radius: RADIUS_CARD.into(),
+                width: 1.0,
+                color: on_overlay(theme, BORDER_GLASS_ALPHA),
+            },
+            ..Default::default()
+        }))
+        .width(Length::Fill)
+        .into()
 }
 
 pub fn disclosure_row<'a, Message: Clone + 'static>(
@@ -776,7 +1046,11 @@ pub fn disclosure_row<'a, Message: Clone + 'static>(
     is_open: bool,
     message: Message,
 ) -> Element<'a, Message> {
-    let chevron = if is_open { "pan-down-symbolic" } else { "pan-end-symbolic" };
+    let chevron = if is_open {
+        "pan-down-symbolic"
+    } else {
+        "pan-end-symbolic"
+    };
 
     button::custom(
         iced::widget::row![
@@ -792,21 +1066,33 @@ pub fn disclosure_row<'a, Message: Clone + 'static>(
             background: None,
             border_radius: RADIUS_CARD.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
         hovered: Box::new(|focused, theme| button::Style {
             background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
             border_radius: RADIUS_CARD.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
         pressed: Box::new(|focused, theme| button::Style {
             background: Some(Background::Color(on_overlay(theme, PRESSED_SUBTLE_ALPHA))),
             border_radius: RADIUS_CARD.into(),
             border_width: if focused { 1.0 } else { 0.0 },
-            border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+            border_color: if focused {
+                accent_color(theme)
+            } else {
+                Color::TRANSPARENT
+            },
             ..button::Style::new()
         }),
         disabled: Box::new(|theme| button::Style {
@@ -826,7 +1112,11 @@ pub fn disclosure_row<'a, Message: Clone + 'static>(
 
 pub fn card_default(theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(Background::Color(frosted_bg(theme, CARD_LUM_DARKEN, OPACITY_CARD))),
+        background: Some(Background::Color(frosted_bg(
+            theme,
+            CARD_LUM_DARKEN,
+            OPACITY_CARD,
+        ))),
         border: Border {
             radius: RADIUS_CARD.into(),
             width: 1.0,
@@ -843,7 +1133,11 @@ pub fn card_default(theme: &cosmic::Theme) -> iced_container::Style {
 
 pub fn card_elevated(theme: &cosmic::Theme) -> iced_container::Style {
     iced_container::Style {
-        background: Some(Background::Color(frosted_bg(theme, CARD_LUM_HOVER, OPACITY_CARD_HOVER))),
+        background: Some(Background::Color(frosted_bg(
+            theme,
+            CARD_LUM_HOVER,
+            OPACITY_CARD_HOVER,
+        ))),
         border: Border {
             radius: RADIUS_CARD.into(),
             width: 1.0,
@@ -871,12 +1165,10 @@ pub fn card_sunken(_theme: &cosmic::Theme) -> iced_container::Style {
 }
 
 pub fn section_header<'a, Message: 'static>(title: &'a str) -> Element<'a, Message> {
-    iced_container(
-        text::caption(title).size(SIZE_CAPTION),
-    )
-    .padding([6, 0, 2, 0])
-    .width(Length::Fill)
-    .into()
+    iced_container(text::caption(title).size(SIZE_CAPTION))
+        .padding([6, 0, 2, 0])
+        .width(Length::Fill)
+        .into()
 }
 
 pub fn paired_device_row<'a, Message: Clone + 'static>(
@@ -961,21 +1253,33 @@ pub fn paired_device_row<'a, Message: Clone + 'static>(
                     background: None,
                     border_radius: 0.0.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 hovered: Box::new(|focused, theme| button::Style {
                     background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                     border_radius: 0.0.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 pressed: Box::new(|focused, theme| button::Style {
                     background: Some(Background::Color(on_overlay(theme, PRESSED_SUBTLE_ALPHA))),
                     border_radius: 0.0.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     ..button::Style::new()
                 }),
                 disabled: Box::new(|_theme| button::Style {
@@ -1040,7 +1344,11 @@ pub fn paired_device_row<'a, Message: Clone + 'static>(
                     ))),
                     border_radius: RADIUS_MD.into(),
                     border_width: 1.0,
-                    border_color: if focused { accent_color(theme) } else { on_overlay(theme, BORDER_GLASS_ALPHA) },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        on_overlay(theme, BORDER_GLASS_ALPHA)
+                    },
                     icon_color: Some(on_color(theme)),
                     ..button::Style::new()
                 }),
@@ -1048,7 +1356,11 @@ pub fn paired_device_row<'a, Message: Clone + 'static>(
                     background: Some(Background::Color(on_overlay(theme, HOVER_OVERLAY_ALPHA))),
                     border_radius: RADIUS_MD.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     icon_color: Some(on_color(theme)),
                     ..button::Style::new()
                 }),
@@ -1056,7 +1368,11 @@ pub fn paired_device_row<'a, Message: Clone + 'static>(
                     background: Some(Background::Color(on_overlay(theme, PRESSED_ALPHA))),
                     border_radius: RADIUS_MD.into(),
                     border_width: if focused { 1.0 } else { 0.0 },
-                    border_color: if focused { accent_color(theme) } else { Color::TRANSPARENT },
+                    border_color: if focused {
+                        accent_color(theme)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     icon_color: Some(on_color(theme)),
                     ..button::Style::new()
                 }),

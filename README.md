@@ -1,5 +1,5 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-3.0.0-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange)
 
 # cosmic-connect
@@ -17,7 +17,7 @@ Star the repo if you use it.
   </tr>
   <tr>
     <td><a href="screenshots/panel.jpeg"><img src="screenshots/panel.jpeg" width="250"></a></td>
-    <td><a href="screenshots/popup.png"><img src="screenshots/popup.png" width="250" alt="COSMIC Connect popup with device switcher, status, quick actions, media, notifications, and text sharing"></a></td>
+    <td><a href="screenshots/popup.png"><img src="screenshots/popup.png" width="250" alt="COSMIC Connect v3 popup with device header, now-playing seek slider, quick actions, notifications, and sharing"></a></td>
   </tr>
 </table>
 
@@ -28,6 +28,7 @@ Star the repo if you use it.
 - Switch between paired devices from the popup
 - Ring or ping your phone to find it
 - See now-playing media info
+- Drag the now-playing slider to seek on your phone
 - Expand, dismiss, and reply to phone notifications
 - Send clipboard text, files, text snippets, and URLs
 - Receive files with transfer progress and open them

@@ -166,6 +166,7 @@ pub enum ActionType {
     DismissNotification(String),
     ReplyToNotification(String, String),
     MediaAction(String),
+    Seek(i64),
     SelectPlayer(String),
 }
 
@@ -187,6 +188,7 @@ impl ActionType {
             Self::DismissNotification(_) => "Dismiss notification",
             Self::ReplyToNotification(..) => "Reply to notification",
             Self::MediaAction(_) => "Media action",
+            Self::Seek(_) => "Seek",
             Self::SelectPlayer(_) => "Select player",
         }
     }
