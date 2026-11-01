@@ -202,7 +202,10 @@ pub struct Notification {
     pub title: String,
     pub text: String,
     pub ticker: String,
+    pub icon_path: String,
+    pub has_icon: bool,
     pub dismissable: bool,
+    pub silent: bool,
     pub reply_id: String,
 }
 

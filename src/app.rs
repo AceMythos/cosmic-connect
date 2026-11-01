@@ -7,12 +7,20 @@ use ashpd::desktop::file_chooser::SelectedFiles;
 use cosmic::app::Core;
 use cosmic::cosmic_config::{Config as CosmicConfig, ConfigGet, ConfigSet};
 use cosmic::iced::core::Alignment;
+use cosmic::iced::core::text::LineHeight;
 use cosmic::iced::gradient;
+use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
+use cosmic::iced::platform_specific::runtime::wayland::layer_surface::{
+    IcedMargin, IcedOutput, SctkLayerSurfaceSettings,
+};
 use cosmic::iced::platform_specific::shell::commands::popup::destroy_popup;
+use cosmic::iced::runtime::platform_specific::wayland::layer_surface::Action as LayerSurfaceAction;
+use cosmic::iced::runtime::platform_specific::wayland::Action as WaylandAction;
+use cosmic::iced::runtime::platform_specific::Action as PlatformAction;
 use cosmic::iced::time;
 use cosmic::iced::window::Id;
 use cosmic::iced::{
-    Background, Border, Color, Gradient, Length, Limits, Shadow, Subscription, Vector,
+    Background, Border, Color, Gradient, Length, Limits, Rectangle, Shadow, Subscription, Vector,
 };
 use cosmic::surface;
 use cosmic::theme;
@@ -48,6 +56,14 @@ const DISCOVERY_INTERVAL_CLOSED: Duration = Duration::from_secs(120);
 const CONFIG_VERSION: u64 = 1;
 const COMPACT_PANEL_KEY: &str = "compact_panel";
 
+const ISLAND_CANVAS_WIDTH: u32 = 460;
+const ISLAND_CANVAS_HEIGHT: u32 = 180;
+const ISLAND_PEEK_WIDTH: f32 = 280.0;
+const ISLAND_PEEK_HEIGHT: f32 = 40.0;
+const ISLAND_EXPANDED_WIDTH: f32 = 420.0;
+const ISLAND_EXPANDED_HEIGHT: f32 = 148.0;
+const ISLAND_RECONCILE_INTERVAL: Duration = Duration::from_millis(500);
+
 static POPUP_AUTOSIZE_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("cosmic-connect-popup"));
 
@@ -65,6 +81,67 @@ pub enum ShareKind {
     Text,
     Url,
     File,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum IslandZone {
+    #[default]
+    Hidden,
+    Peek,
+    Expanded,
+}
+
+enum IslandActivity<'a> {
+    Alert(&'a Notification),
+    Media {
+        player: &'a PlayerInfo,
+        art: Option<&'a str>,
+    },
+    Transfer(&'a ReceivedFile),
+}
+
+impl IslandActivity<'_> {
+    fn accent(&self) -> Color {
+        match self {
+            Self::Alert(_) => Color::from_rgb(1.0, 0.72, 0.35),
+            Self::Media { .. } => Color::from_rgb(0.55, 0.72, 1.0),
+            Self::Transfer(_) => Color::from_rgb(0.45, 0.90, 0.65),
+        }
+    }
+
+    fn badge(&self) -> String {
+        match self {
+            Self::Alert(notif) => {
+                if notif.app_name.trim().is_empty() {
+                    "ALERT".to_string()
+                } else {
+                    notif.app_name.to_uppercase()
+                }
+            }
+            Self::Media { player, .. } => {
+                if player.is_playing {
+                    "PLAYING".to_string()
+                } else {
+                    "PAUSED".to_string()
+                }
+            }
+            Self::Transfer(_) => "TRANSFER".to_string(),
+        }
+    }
+}
+
+struct IslandCard<'a> {
+    accent: Color,
+    badge: String,
+    title: String,
+    subtitle: String,
+    detail: Option<String>,
+    art: Option<&'a str>,
+    art_icon: &'a str,
+    progress: Option<f32>,
+    progress_text: Option<String>,
+    primary_action: Option<Element<'a, Action<Message>>>,
+    actions: Vec<Element<'a, Action<Message>>>,
 }
 
 #[derive(Default)]
@@ -109,6 +186,10 @@ pub struct CosmicConnect {
     pairing_notifs: HashMap<u32, String>,
     last_sync: Option<Instant>,
     compact_panel: bool,
+    island: Option<Id>,
+    island_pinned: bool,
+    island_expanded: bool,
+    island_zone: IslandZone,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +226,9 @@ pub enum Message {
     ConfirmUnpair,
     ToggleAdvanced(String),
     ToggleDeviceList,
+    ToggleIsland,
+    IslandReconcile,
+    IslandToggleExpand,
     SetCompactPanel(bool),
     SetPopupView(PopupView),
     SelectShareKind(String, ShareKind),
@@ -1890,12 +1974,502 @@ impl CosmicConnect {
             content.push(section);
         }
         content.push(divider::horizontal::default().into());
+        content.push(self.render_sub_header("Labs", None));
+        content.push(crate::widgets::nav_row(
+            "preferences-system-symbolic",
+            if self.island.is_some() {
+                "Close floating island".to_string()
+            } else {
+                "Open floating island".to_string()
+            },
+            "Live activity".to_string(),
+            Message::ToggleIsland,
+        ));
         content.push(self.render_panel_settings());
         if let Some(status) = self.render_status_banner(draft) {
             content.push(status);
         }
 
         column::with_children(content).spacing(10).into()
+    }
+
+    fn live_activity(&self) -> Option<IslandActivity<'_>> {
+        let device = self.selected_device()?;
+        if !device.is_reachable {
+            return None;
+        }
+        let draft = self.drafts.get(&device.id)?;
+
+        let player = draft
+            .player
+            .as_ref()
+            .filter(|player| !player.title.trim().is_empty());
+
+        let alert = draft.notifications.iter().rev().find(|notif| {
+            !notif.dismissable
+                && !notif.silent
+                && !player.is_some_and(|player| island_media_mirror(notif, player))
+        });
+        if let Some(notif) = alert {
+            return Some(IslandActivity::Alert(notif));
+        }
+
+        if let Some(player) = player {
+            let art = draft
+                .notifications
+                .iter()
+                .find(|notif| {
+                    island_media_mirror(notif, player) && !notif.icon_path.trim().is_empty()
+                })
+                .map(|notif| notif.icon_path.as_str());
+            return Some(IslandActivity::Media { player, art });
+        }
+
+        self.received_files
+            .get(&device.id)
+            .and_then(|files| files.iter().rev().find(|file| file.active))
+            .map(IslandActivity::Transfer)
+    }
+
+    fn island_target_zone(&self) -> IslandZone {
+        if self.live_activity().is_none() {
+            return if self.island_pinned {
+                IslandZone::Peek
+            } else {
+                IslandZone::Hidden
+            };
+        }
+
+        if self.island_expanded {
+            IslandZone::Expanded
+        } else {
+            IslandZone::Peek
+        }
+    }
+
+    fn sync_island(&mut self) -> Task<Action<Message>> {
+        if self.island.is_none() {
+            if self.live_activity().is_some() {
+                return self.spawn_island(false);
+            }
+            return Task::none();
+        }
+
+        let target = self.island_target_zone();
+        if target == IslandZone::Hidden {
+            return self.destroy_island();
+        }
+
+        if target != self.island_zone {
+            let Some(id) = self.island else {
+                return Task::none();
+            };
+            self.island_zone = target;
+            log::debug!("Island: input zone -> {target:?}");
+            return island_set_zone(id, target);
+        }
+
+        Task::none()
+    }
+
+    fn destroy_island(&mut self) -> Task<Action<Message>> {
+        let Some(id) = self.island.take() else {
+            return Task::none();
+        };
+        self.island_pinned = false;
+        self.island_expanded = false;
+        self.island_zone = IslandZone::Hidden;
+        log::info!("Island: destroying layer surface {id:?}");
+        surface::surface_task(surface::action::destroy_layer_shell(id))
+    }
+
+    fn toggle_island(&mut self) -> Task<Action<Message>> {
+        if self.island.is_some() {
+            return self.destroy_island();
+        }
+
+        self.spawn_island(true)
+    }
+
+    fn spawn_island(&mut self, pinned: bool) -> Task<Action<Message>> {
+        let id = Id::unique();
+        self.island = Some(id);
+        self.island_pinned = pinned;
+        self.island_expanded = false;
+        self.island_zone = IslandZone::Peek;
+        log::info!("Island: spawning layer surface {id:?} (pinned={pinned})");
+
+        surface::surface_task(surface::action::app_layer_shell(
+            |_app: &CosmicConnect| surface::action::LiveSettings {
+                padding: Some(IcedMargin::default()),
+                blur: Some(false),
+                ..Default::default()
+            },
+            move |_app: &mut CosmicConnect| island_settings(id, IslandZone::Peek),
+            Some(Box::new(|app: &CosmicConnect| app.render_island())),
+        ))
+    }
+
+    fn toggle_island_expand(&mut self) -> Task<Action<Message>> {
+        let Some(id) = self.island else {
+            return Task::none();
+        };
+        if self.live_activity().is_none() && !self.island_pinned {
+            return Task::none();
+        }
+
+        self.island_expanded = !self.island_expanded;
+        let zone = if self.island_expanded {
+            IslandZone::Expanded
+        } else {
+            IslandZone::Peek
+        };
+        self.island_zone = zone;
+        log::debug!(
+            "Island: expanded={} input zone -> {zone:?}",
+            self.island_expanded
+        );
+        island_set_zone(id, zone)
+    }
+
+    fn render_island(&self) -> Element<'_, Action<Message>> {
+        if self.island_zone == IslandZone::Hidden {
+            return container(row![])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
+
+        let activity = self.live_activity();
+        let device = self.selected_device();
+
+        let mut accent = Color::from_rgb(0.62, 0.68, 0.82);
+        let mut badge = "IDLE".to_string();
+        let mut title = device
+            .map(|device| device.name.clone())
+            .unwrap_or_else(|| "Cosmic Connect".to_string());
+        let mut subtitle = device
+            .map(|device| {
+                if device.is_reachable {
+                    "Connected".to_string()
+                } else {
+                    "Offline".to_string()
+                }
+            })
+            .unwrap_or_default();
+        let mut detail: Option<String> = None;
+        let mut art: Option<&str> = None;
+        let mut art_icon = device
+            .map(|device| device.device_type.icon_name())
+            .unwrap_or("phone-symbolic");
+        let mut progress: Option<f32> = None;
+        let mut progress_text: Option<String> = None;
+        let mut primary_action: Option<Element<'_, Action<Message>>> = None;
+        let mut actions: Vec<Element<'_, Action<Message>>> = Vec::new();
+        let device_id = device.map(|device| device.id.clone()).unwrap_or_default();
+
+        if let Some(activity) = &activity {
+            accent = activity.accent();
+            badge = activity.badge();
+
+            match activity {
+                IslandActivity::Alert(notif) => {
+                    title = if notif.title.trim().is_empty() {
+                        notif.app_name.clone()
+                    } else {
+                        notif.title.clone()
+                    };
+                    subtitle = if notif.app_name.trim().is_empty() {
+                        "Notification".to_string()
+                    } else {
+                        notif.app_name.clone()
+                    };
+                    detail = if !notif.text.trim().is_empty() {
+                        Some(notif.text.clone())
+                    } else if !notif.ticker.trim().is_empty()
+                        && notif.ticker.trim() != notif.title.trim()
+                    {
+                        Some(notif.ticker.clone())
+                    } else {
+                        None
+                    };
+                    if !notif.icon_path.trim().is_empty() {
+                        art = Some(notif.icon_path.as_str());
+                    }
+                    art_icon = "dialog-information-symbolic";
+
+                    primary_action = Some(island_text_button(
+                        "Dismiss",
+                        Message::DismissNotification(
+                            device_id.clone(),
+                            notif.internal_id.clone(),
+                        ),
+                        accent,
+                    ));
+                    actions.push(island_text_button(
+                        "Dismiss",
+                        Message::DismissNotification(
+                            device_id.clone(),
+                            notif.internal_id.clone(),
+                        ),
+                        accent,
+                    ));
+                }
+                IslandActivity::Media {
+                    player,
+                    art: media_art,
+                } => {
+                    title = player.title.clone();
+                    subtitle = if player.artist.trim().is_empty() {
+                        player.album.clone()
+                    } else {
+                        player.artist.clone()
+                    };
+                    detail = match (player.artist.trim(), player.album.trim()) {
+                        ("", "") => None,
+                        ("", album) => Some(album.to_string()),
+                        (artist, "") => Some(artist.to_string()),
+                        (artist, album) => Some(format!("{artist} · {album}")),
+                    };
+                    art = *media_art;
+                    art_icon = "audio-x-generic-symbolic";
+
+                    let length = player.length.max(0);
+                    if length > 0 {
+                        let position = player.position.clamp(0, length);
+                        progress = Some((position as f32 / length as f32).clamp(0.0, 1.0));
+                        progress_text =
+                            Some(format!("{} / {}", format_ms(position), format_ms(length)));
+                    }
+
+                    primary_action = Some(island_icon_button(
+                        if player.is_playing {
+                            "media-playback-pause-symbolic"
+                        } else {
+                            "media-playback-start-symbolic"
+                        },
+                        Message::MediaAction(device_id.clone(), "PlayPause".into()),
+                        accent,
+                    ));
+                    actions.push(island_icon_button(
+                        "media-skip-backward-symbolic",
+                        Message::MediaAction(device_id.clone(), "Previous".into()),
+                        accent,
+                    ));
+                    actions.push(island_icon_button(
+                        if player.is_playing {
+                            "media-playback-pause-symbolic"
+                        } else {
+                            "media-playback-start-symbolic"
+                        },
+                        Message::MediaAction(device_id.clone(), "PlayPause".into()),
+                        accent,
+                    ));
+                    actions.push(island_icon_button(
+                        "media-skip-forward-symbolic",
+                        Message::MediaAction(device_id.clone(), "Next".into()),
+                        accent,
+                    ));
+                }
+                IslandActivity::Transfer(file) => {
+                    title = file.file_name.clone();
+                    subtitle = "Incoming file".to_string();
+                    let transferred =
+                        file.total_bytes.saturating_mul(file.progress as u64) / 100;
+                    detail = Some(if file.total_bytes > 0 {
+                        format!(
+                            "{}% · {} of {}",
+                            file.progress,
+                            format_bytes(transferred),
+                            format_bytes(file.total_bytes)
+                        )
+                    } else {
+                        format!("{}%", file.progress)
+                    });
+                    art_icon = "document-save-symbolic";
+                    progress = Some((file.progress as f32 / 100.0).clamp(0.0, 1.0));
+                    progress_text = Some(format!("{}%", file.progress));
+                }
+            }
+        }
+
+        let card = IslandCard {
+            accent,
+            badge,
+            title,
+            subtitle,
+            detail,
+            art,
+            art_icon,
+            progress,
+            progress_text,
+            primary_action,
+            actions,
+        };
+
+        if self.island_expanded {
+            self.render_island_expanded(card)
+        } else {
+            self.render_island_peek(card)
+        }
+    }
+
+    fn render_island_peek<'a>(&self, card: IslandCard<'a>) -> Element<'a, Action<Message>> {
+        let IslandCard {
+            accent,
+            title,
+            subtitle,
+            art,
+            art_icon,
+            primary_action,
+            ..
+        } = card;
+
+        let art = island_art(art, 26.0, 8.0)
+            .unwrap_or_else(|| island_icon_chip(art_icon, accent, 26.0));
+
+        let labels = column![
+            text::text(truncate_text(title.trim(), 26))
+                .size(12.5)
+                .line_height(LineHeight::Absolute(15.0.into()))
+                .class(theme::Text::Color(Color::from_rgb(0.96, 0.97, 0.99))),
+            text::text(truncate_text(subtitle.trim(), 30))
+                .size(10.5)
+                .line_height(LineHeight::Absolute(12.5.into()))
+                .class(theme::Text::Color(Color::from_rgb(0.70, 0.74, 0.82))),
+        ]
+        .spacing(0);
+
+        let body = container(row![art, labels].spacing(9).align_y(Alignment::Center))
+            .width(Length::Fill)
+            .align_x(Alignment::Start)
+            .align_y(Alignment::Center);
+
+        let expandable =
+            cosmic::widget::mouse_area(body).on_press(Action::App(Message::IslandToggleExpand));
+
+        let content: Element<'_, Action<Message>> = match primary_action {
+            Some(action) => row![expandable, action]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into(),
+            None => row![expandable].into(),
+        };
+
+        container(content)
+            .width(ISLAND_PEEK_WIDTH)
+            .height(ISLAND_PEEK_HEIGHT)
+            .padding([5, 10])
+            .align_x(Alignment::Start)
+            .align_y(Alignment::Center)
+            .style(island_capsule_style(accent, 20.0))
+            .into()
+    }
+
+    fn render_island_expanded<'a>(&self, card: IslandCard<'a>) -> Element<'a, Action<Message>> {
+        let IslandCard {
+            accent,
+            badge,
+            title,
+            subtitle,
+            detail,
+            art,
+            art_icon,
+            progress,
+            progress_text,
+            actions,
+            ..
+        } = card;
+
+        let art = island_art(art, 34.0, 10.0)
+            .unwrap_or_else(|| island_icon_chip(art_icon, accent, 34.0));
+
+        let heading = column![
+            text::text(truncate_text(title.trim(), 40))
+                .size(14.0)
+                .line_height(LineHeight::Absolute(17.0.into()))
+                .class(theme::Text::Color(Color::from_rgb(0.97, 0.98, 1.0))),
+            text::text(truncate_text(subtitle.trim(), 52))
+                .size(11.0)
+                .line_height(LineHeight::Absolute(13.0.into()))
+                .class(theme::Text::Color(Color::from_rgb(0.70, 0.74, 0.82))),
+        ]
+        .spacing(1);
+
+        let badge = container(
+            text::text(badge)
+                .size(9.0)
+                .line_height(LineHeight::Absolute(11.0.into()))
+                .class(theme::Text::Color(accent)),
+        )
+        .padding([3, 7])
+        .style(move |_theme: &cosmic::Theme| iced_container::Style {
+            background: Some(Background::Color(Color::from_rgba(
+                accent.r, accent.g, accent.b, 0.14,
+            ))),
+            border: Border {
+                radius: 9.0.into(),
+                width: 1.0,
+                color: Color::from_rgba(accent.r, accent.g, accent.b, 0.30),
+            },
+            ..Default::default()
+        });
+
+        let collapse = island_icon_button("pan-up-symbolic", Message::IslandToggleExpand, accent);
+
+        let header = row![
+            art,
+            container(heading).width(Length::Fill),
+            badge,
+            collapse,
+        ]
+        .spacing(9)
+        .align_y(Alignment::Center);
+
+        let mut body = column![header].spacing(8);
+
+        if let Some(detail) = detail {
+            body = body.push(
+                text::text(truncate_text(detail.trim(), 64))
+                    .size(11.0)
+                    .line_height(LineHeight::Absolute(14.0.into()))
+                    .class(theme::Text::Color(Color::from_rgb(0.78, 0.81, 0.88))),
+            );
+        }
+
+        if let Some(progress) = progress {
+            let bar = progress_bar::determinate_linear(progress)
+                .width(Length::Fill)
+                .girth(4);
+
+            let mut progress_row = row![bar].spacing(8).align_y(Alignment::Center);
+            if let Some(progress_text) = progress_text {
+                progress_row = progress_row.push(
+                    text::text(progress_text)
+                        .size(9.5)
+                        .line_height(LineHeight::Absolute(12.0.into()))
+                        .class(theme::Text::Color(Color::from_rgb(0.66, 0.70, 0.78))),
+                );
+            }
+            body = body.push(progress_row);
+        }
+
+        if !actions.is_empty() {
+            let mut action_row = row![].spacing(6).align_y(Alignment::Center);
+            for action in actions {
+                action_row = action_row.push(action);
+            }
+            body = body.push(action_row);
+        }
+
+        container(body)
+            .width(ISLAND_EXPANDED_WIDTH)
+            .height(ISLAND_EXPANDED_HEIGHT)
+            .padding([12, 14])
+            .align_x(Alignment::Start)
+            .align_y(Alignment::Start)
+            .style(island_capsule_style(accent, 28.0))
+            .into()
     }
 }
 
@@ -1914,26 +2488,33 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
-        (
-            Self {
-                core,
-                compact_panel: load_compact_panel(),
-                ..Default::default()
+        let mut app = Self {
+            core,
+            compact_panel: load_compact_panel(),
+            ..Default::default()
+        };
+
+        let backend_task = Task::perform(
+            async {
+                KdeConnectBackend::new()
+                    .await
+                    .map(Arc::new)
+                    .map_err(|e| format!("D-Bus: {e}"))
             },
-            Task::perform(
-                async {
-                    KdeConnectBackend::new()
-                        .await
-                        .map(Arc::new)
-                        .map_err(|e| format!("D-Bus: {e}"))
-                },
-                |result| match result {
-                    Ok(backend) => Message::BackendReady(backend),
-                    Err(error) => Message::BackendError(error),
-                },
-            )
-            .map(cosmic::Action::App),
+            |result| match result {
+                Ok(backend) => Message::BackendReady(backend),
+                Err(error) => Message::BackendError(error),
+            },
         )
+        .map(cosmic::Action::App);
+
+        let island_task = if std::env::var_os("COSMIC_CONNECT_ISLAND_SPIKE").is_some() {
+            app.spawn_island(true)
+        } else {
+            Task::none()
+        };
+
+        (app, Task::batch([backend_task, island_task]))
     }
 
     fn on_close_requested(&self, id: cosmic::iced::window::Id) -> Option<Message> {
@@ -2141,7 +2722,7 @@ impl cosmic::Application for CosmicConnect {
                     }
                     let selected = selected_id.as_deref() == Some(device.id.as_str());
 
-                    if selected && popup_open && device.has_plugin("kdeconnect_notifications") {
+                    if selected && device.has_plugin("kdeconnect_notifications") {
                         let Some(backend) = self.backend.clone() else {
                             continue;
                         };
@@ -2155,7 +2736,7 @@ impl cosmic::Application for CosmicConnect {
                             .map(cosmic::Action::App),
                         );
                     }
-                    if selected && popup_open && device.has_plugin("kdeconnect_mprisremote") {
+                    if selected && device.has_plugin("kdeconnect_mprisremote") {
                         let Some(backend) = self.backend.clone() else {
                             continue;
                         };
@@ -2435,6 +3016,7 @@ impl cosmic::Application for CosmicConnect {
                     }
                 }
                 draft.notifications = notifications;
+                return self.sync_island();
             }
             Message::SelectNotification(device_id, internal_id) => {
                 let draft = self.draft_mut(&device_id);
@@ -2528,6 +3110,7 @@ impl cosmic::Application for CosmicConnect {
                     draft.seek_preview = None;
                 }
                 draft.player = player;
+                return self.sync_island();
             }
             Message::ConnectivityUpdated(device_id, connectivity) => {
                 self.draft_mut(&device_id).connectivity = connectivity;
@@ -2598,6 +3181,7 @@ impl cosmic::Application for CosmicConnect {
                     total_bytes,
                 };
                 self.received_files.entry(device_id).or_default().push(rf);
+                return self.sync_island();
             }
             Message::TransferProgress(device_id, transfer_id, _transferred, _total, percent) => {
                 let nkey = format!("transfer:{transfer_id}");
@@ -2917,6 +3501,15 @@ impl cosmic::Application for CosmicConnect {
             Message::ToggleDeviceList => {
                 self.device_list_open = !self.device_list_open;
             }
+            Message::ToggleIsland => {
+                return self.toggle_island();
+            }
+            Message::IslandReconcile => {
+                return self.sync_island();
+            }
+            Message::IslandToggleExpand => {
+                return self.toggle_island_expand();
+            }
             Message::SetCompactPanel(enabled) => {
                 self.compact_panel = enabled;
                 save_compact_panel(enabled);
@@ -3207,6 +3800,12 @@ impl cosmic::Application for CosmicConnect {
             subscriptions.push(time::every(Duration::from_millis(500)).map(|_| Message::Tick));
         }
 
+        if self.island.is_some() {
+            subscriptions.push(
+                time::every(ISLAND_RECONCILE_INTERVAL).map(|_| Message::IslandReconcile),
+            );
+        }
+
         Subscription::batch(subscriptions)
     }
 }
@@ -3246,6 +3845,255 @@ fn glass_card(theme: &cosmic::Theme) -> iced_container::Style {
         },
         ..Default::default()
     }
+}
+
+fn island_input_region(zone: IslandZone) -> Option<Vec<Rectangle>> {
+    let region = match zone {
+        IslandZone::Hidden => Vec::new(),
+        IslandZone::Peek => vec![Rectangle {
+            x: (ISLAND_CANVAS_WIDTH as f32 - ISLAND_PEEK_WIDTH) / 2.0,
+            y: 0.0,
+            width: ISLAND_PEEK_WIDTH,
+            height: ISLAND_PEEK_HEIGHT,
+        }],
+        IslandZone::Expanded => vec![Rectangle {
+            x: (ISLAND_CANVAS_WIDTH as f32 - ISLAND_EXPANDED_WIDTH) / 2.0,
+            y: 0.0,
+            width: ISLAND_EXPANDED_WIDTH,
+            height: ISLAND_EXPANDED_HEIGHT,
+        }],
+    };
+
+    Some(region)
+}
+
+fn island_settings(id: Id, zone: IslandZone) -> SctkLayerSurfaceSettings {
+    SctkLayerSurfaceSettings {
+        id,
+        layer: Layer::Top,
+        keyboard_interactivity: KeyboardInteractivity::None,
+        input_zone: island_input_region(zone),
+        anchor: Anchor::TOP,
+        output: IcedOutput::Active,
+        namespace: "cosmic-connect-island".to_string(),
+        margin: IcedMargin {
+            top: 56,
+            right: 0,
+            bottom: 0,
+            left: 0,
+        },
+        size: Some((Some(ISLAND_CANVAS_WIDTH), Some(ISLAND_CANVAS_HEIGHT))),
+        exclusive_zone: 0,
+        size_limits: Limits::NONE
+            .min_width(ISLAND_CANVAS_WIDTH as f32)
+            .max_width(ISLAND_CANVAS_WIDTH as f32)
+            .min_height(ISLAND_CANVAS_HEIGHT as f32)
+            .max_height(ISLAND_CANVAS_HEIGHT as f32),
+    }
+}
+
+fn island_set_zone(id: Id, zone: IslandZone) -> Task<Action<Message>> {
+    cosmic::iced::runtime::task::effect(
+        cosmic::iced::runtime::Action::PlatformSpecific(PlatformAction::Wayland(
+            WaylandAction::LayerSurface(LayerSurfaceAction::InputZone {
+                id,
+                zone: island_input_region(zone),
+            }),
+        )),
+    )
+}
+
+fn island_media_mirror(notif: &Notification, player: &PlayerInfo) -> bool {
+    let title = player.title.trim();
+    if title.is_empty() {
+        return false;
+    }
+
+    if notif.title.trim().eq_ignore_ascii_case(title) {
+        return true;
+    }
+
+    let ticker = notif.ticker.trim();
+    ticker.eq_ignore_ascii_case(title)
+        || ticker
+            .split(':')
+            .next()
+            .is_some_and(|head| head.trim().eq_ignore_ascii_case(title))
+}
+
+fn island_art<'a>(
+    path: Option<&str>,
+    size: f32,
+    radius: f32,
+) -> Option<Element<'a, Action<Message>>> {
+    let path = path?;
+    let path = std::path::Path::new(path);
+    if path.as_os_str().is_empty() || !path.is_file() {
+        return None;
+    }
+
+    Some(
+        cosmic::widget::image(cosmic::widget::image::Handle::from_path(
+            path.to_path_buf(),
+        ))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .border_radius(radius)
+        .into(),
+    )
+}
+
+fn island_icon_chip<'a>(
+    icon_name: &'a str,
+    accent: Color,
+    size: f32,
+) -> Element<'a, Action<Message>> {
+    container(icon::from_name(icon_name).size((size * 0.5) as u16))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_theme: &cosmic::Theme| iced_container::Style {
+            background: Some(Background::Color(Color::from_rgba(
+                accent.r, accent.g, accent.b, 0.16,
+            ))),
+            border: Border {
+                radius: (size * 0.28).into(),
+                width: 1.0,
+                color: Color::from_rgba(accent.r, accent.g, accent.b, 0.28),
+            },
+            icon_color: Some(accent),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn island_capsule_style(
+    accent: Color,
+    radius: f32,
+) -> impl Fn(&cosmic::Theme) -> iced_container::Style {
+    move |_theme: &cosmic::Theme| iced_container::Style {
+        background: Some(Background::Gradient(Gradient::Linear(
+            gradient::Linear::new(std::f32::consts::PI)
+                .add_stop(0.0, Color::from_rgba(0.105, 0.115, 0.145, 0.97))
+                .add_stop(1.0, Color::from_rgba(0.035, 0.040, 0.055, 0.985)),
+        ))),
+        border: Border {
+            radius: radius.into(),
+            width: 1.0,
+            color: Color::from_rgba(accent.r, accent.g, accent.b, 0.30),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+            offset: Vector::new(0.0, 12.0),
+            blur_radius: 32.0,
+        },
+        text_color: Some(Color::from_rgb(0.96, 0.97, 0.99)),
+        icon_color: Some(Color::from_rgb(0.96, 0.97, 0.99)),
+        ..Default::default()
+    }
+}
+
+fn island_icon_button<'a>(
+    icon_name: &'a str,
+    message: Message,
+    accent: Color,
+) -> Element<'a, Action<Message>> {
+    button::custom(icon::from_name(icon_name).size(15))
+        .on_press(Action::App(message))
+        .padding(6)
+        .class(theme::Button::Custom {
+            active: Box::new(move |focused, _theme| button::Style {
+                background: Some(Background::Color(Color::from_rgba(
+                    1.0,
+                    1.0,
+                    1.0,
+                    if focused { 0.16 } else { 0.08 },
+                ))),
+                border_radius: 14.0.into(),
+                border_width: if focused { 1.0 } else { 0.0 },
+                border_color: if focused { accent } else { Color::TRANSPARENT },
+                icon_color: Some(if focused {
+                    accent
+                } else {
+                    Color::from_rgb(0.92, 0.93, 0.96)
+                }),
+                ..button::Style::new()
+            }),
+            hovered: Box::new(move |_focused, _theme| button::Style {
+                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.16))),
+                border_radius: 14.0.into(),
+                border_width: 1.0,
+                border_color: Color::from_rgba(accent.r, accent.g, accent.b, 0.35),
+                icon_color: Some(accent),
+                ..button::Style::new()
+            }),
+            pressed: Box::new(move |_focused, _theme| button::Style {
+                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.20))),
+                border_radius: 14.0.into(),
+                icon_color: Some(accent),
+                ..button::Style::new()
+            }),
+            disabled: Box::new(|_theme| button::Style {
+                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.04))),
+                border_radius: 14.0.into(),
+                icon_color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.30)),
+                ..button::Style::new()
+            }),
+        })
+        .into()
+}
+
+fn island_text_button<'a>(
+    label: &'a str,
+    message: Message,
+    accent: Color,
+) -> Element<'a, Action<Message>> {
+    button::custom(
+        text::text(label)
+            .size(11.0)
+            .line_height(LineHeight::Absolute(13.0.into()))
+            .class(theme::Text::Color(accent)),
+    )
+    .on_press(Action::App(message))
+    .padding([5, 10])
+    .class(theme::Button::Custom {
+        active: Box::new(move |focused, _theme| button::Style {
+            background: Some(Background::Color(Color::from_rgba(
+                accent.r,
+                accent.g,
+                accent.b,
+                if focused { 0.22 } else { 0.14 },
+            ))),
+            border_radius: 12.0.into(),
+            border_width: 1.0,
+            border_color: Color::from_rgba(accent.r, accent.g, accent.b, 0.38),
+            text_color: Some(accent),
+            ..button::Style::new()
+        }),
+        hovered: Box::new(move |_focused, _theme| button::Style {
+            background: Some(Background::Color(Color::from_rgba(
+                accent.r, accent.g, accent.b, 0.22,
+            ))),
+            border_radius: 12.0.into(),
+            border_width: 1.0,
+            border_color: Color::from_rgba(accent.r, accent.g, accent.b, 0.55),
+            text_color: Some(accent),
+            ..button::Style::new()
+        }),
+        pressed: Box::new(move |_focused, _theme| button::Style {
+            background: Some(Background::Color(Color::from_rgba(
+                accent.r, accent.g, accent.b, 0.30,
+            ))),
+            border_radius: 12.0.into(),
+            border_width: 1.0,
+            border_color: Color::from_rgba(accent.r, accent.g, accent.b, 0.55),
+            text_color: Some(accent),
+            ..button::Style::new()
+        }),
+        disabled: Box::new(|_theme| button::Style::new()),
+    })
+    .into()
 }
 
 struct PollState {

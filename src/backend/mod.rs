@@ -552,7 +552,10 @@ impl KdeConnectBackend {
             title: proxy.get_property("title").await.ok().unwrap_or_default(),
             text: proxy.get_property("text").await.ok().unwrap_or_default(),
             ticker: proxy.get_property("ticker").await.ok().unwrap_or_default(),
+            icon_path: proxy.get_property("iconPath").await.ok().unwrap_or_default(),
+            has_icon: proxy.get_property("hasIcon").await.ok().unwrap_or_default(),
             dismissable: proxy.get_property("dismissable").await.ok().unwrap_or_default(),
+            silent: proxy.get_property("silent").await.ok().unwrap_or_default(),
             reply_id: proxy.get_property("replyId").await.ok().unwrap_or_default(),
         })
     }
