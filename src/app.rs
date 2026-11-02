@@ -55,6 +55,7 @@ const DISCOVERY_INTERVAL_OPEN: Duration = Duration::from_secs(30);
 const DISCOVERY_INTERVAL_CLOSED: Duration = Duration::from_secs(120);
 const CONFIG_VERSION: u64 = 1;
 const COMPACT_PANEL_KEY: &str = "compact_panel";
+const PANEL_BOLT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M10 1 2 9.5h4.5L6 15l8-8.5H9.5L10 1Z" fill="white"/></svg>"#;
 
 const ISLAND_CANVAS_WIDTH: u32 = 460;
 const ISLAND_CANVAS_HEIGHT: u32 = 180;
@@ -186,6 +187,7 @@ pub struct CosmicConnect {
     pairing_notifs: HashMap<u32, String>,
     last_sync: Option<Instant>,
     compact_panel: bool,
+    panel_bolt_dimmed: bool,
     island: Option<Id>,
     island_pinned: bool,
     island_expanded: bool,
@@ -238,6 +240,7 @@ pub enum Message {
     FileOpenFinished(String, Result<(), String>),
     ConnectivityUpdated(String, Option<ConnectivityInfo>),
     Tick,
+    BoltBlink,
     FileReceived(String, String),
     ClipboardReceived(String, String),
     PingReceived(String),
@@ -572,6 +575,16 @@ impl CosmicConnect {
         self.selected_device_id
             .as_deref()
             .and_then(|id| self.devices.iter().find(|d| d.id == *id))
+    }
+
+    fn selected_device_charging(&self) -> bool {
+        self.selected_device().is_some_and(|device| {
+            device.is_reachable
+                && device
+                    .battery
+                    .as_ref()
+                    .is_some_and(|battery| battery.is_charging)
+        })
     }
 
     fn render_panel_settings(&self) -> Element<'_, Message> {
@@ -3603,6 +3616,9 @@ impl cosmic::Application for CosmicConnect {
                 }
             }
             Message::Tick => {}
+            Message::BoltBlink => {
+                self.panel_bolt_dimmed = !self.panel_bolt_dimmed;
+            }
         }
 
         Task::none()
@@ -3634,6 +3650,9 @@ impl cosmic::Application for CosmicConnect {
                 .on_press_down(Message::TogglePopup);
 
             let mut tooltip_label = self.panel_preview();
+            if self.selected_device_charging() {
+                tooltip_label.push_str(" - charging");
+            }
             if unread > 0 {
                 tooltip_label.push_str(&format!(" - {unread} unread"));
             }
@@ -3655,6 +3674,23 @@ impl cosmic::Application for CosmicConnect {
 
         let preview = text::caption(self.panel_preview()).size(SIZE_CAPTION);
         let mut content = row![icon, preview].spacing(6).align_y(Alignment::Center);
+
+        if self.selected_device_charging() {
+            let slot: Element<'_, Message> = if self.panel_bolt_dimmed {
+                row![].into()
+            } else {
+                icon::from_svg_bytes(PANEL_BOLT_SVG)
+                    .symbolic(true)
+                    .icon()
+                    .size(SIZE_CAPTION)
+                    .into()
+            };
+            content = content.push(
+                container(slot)
+                    .width(Length::Fixed(14.0))
+                    .align_x(Alignment::Center),
+            );
+        }
 
         if unread > 0 {
             content = content.push(text::caption(format!("({unread})")).size(SIZE_CAPTION));
@@ -3798,6 +3834,10 @@ impl cosmic::Application for CosmicConnect {
 
         if self.popup.is_some() {
             subscriptions.push(time::every(Duration::from_millis(500)).map(|_| Message::Tick));
+        }
+
+        if self.selected_device_charging() {
+            subscriptions.push(time::every(Duration::from_millis(600)).map(|_| Message::BoltBlink));
         }
 
         if self.island.is_some() {
