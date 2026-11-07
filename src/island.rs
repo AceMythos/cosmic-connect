@@ -64,6 +64,18 @@ pub struct FeedActivity {
     pub progress: Option<f32>,
     #[serde(default)]
     pub progress_text: Option<String>,
+    /// Playback position in milliseconds, when known.
+    #[serde(default)]
+    pub position_ms: Option<i64>,
+    /// Track length in milliseconds, when known.
+    #[serde(default)]
+    pub length_ms: Option<i64>,
+    /// Whether the player accepts seek requests.
+    #[serde(default)]
+    pub can_seek: bool,
+    /// Human-readable device name for the expanded action row.
+    #[serde(default)]
+    pub device_name: String,
     /// Short trailing label for the compact pill (e.g. "42%").
     #[serde(default)]
     pub compact: Option<String>,

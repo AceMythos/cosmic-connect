@@ -63,7 +63,7 @@ const PANEL_BOLT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
 
 const ISLAND_CANVAS_WIDTH: u32 = 520;
 const ISLAND_CANVAS_HEIGHT: u32 = 208;
-const ISLAND_TOP_OFFSET: f32 = 12.0;
+const ISLAND_TOP_OFFSET: f32 = 8.0;
 const ISLAND_PEEK_WIDTH: f32 = 304.0;
 const ISLAND_PEEK_HEIGHT: f32 = 46.0;
 const ISLAND_PEEK_RADIUS: f32 = 23.0;
@@ -71,8 +71,9 @@ const ISLAND_EXPANDED_WIDTH: f32 = 428.0;
 const ISLAND_EXPANDED_HEIGHT: f32 = 158.0;
 const ISLAND_EXPANDED_RADIUS: f32 = 30.0;
 const ISLAND_MORPH_DURATION: Duration = Duration::from_millis(420);
+const ISLAND_COLLAPSE_MORPH_DURATION: Duration = Duration::from_millis(280);
 const ISLAND_HOVER_EXPAND_DELAY: Duration = Duration::from_millis(420);
-const ISLAND_HOVER_COLLAPSE_DELAY: Duration = Duration::from_millis(1400);
+const ISLAND_HOVER_COLLAPSE_DELAY: Duration = Duration::from_millis(450);
 const ISLAND_EQ_INTERVAL: Duration = Duration::from_millis(90);
 const ISLAND_RECONCILE_INTERVAL: Duration = Duration::from_millis(250);
 const HELPER_FEED_INTERVAL: Duration = Duration::from_millis(200);
@@ -135,6 +136,11 @@ struct IslandCard<'a> {
     art_icon: &'a str,
     progress: Option<f32>,
     progress_text: Option<String>,
+    device_id: String,
+    device_name: String,
+    position_ms: Option<i64>,
+    length_ms: Option<i64>,
+    can_seek: bool,
     compact: Option<String>,
     actions: Vec<Element<'a, Action<Message>>>,
     lock_expanded: bool,
@@ -197,6 +203,9 @@ pub struct CosmicConnect {
     island_unhover_at: Option<Instant>,
     island_morph: Option<Animation<f32>>,
     island_eq_phase: f32,
+    island_seek_preview: Option<i64>,
+    island_seek_dragging: bool,
+    island_seek_preview_at: Option<Instant>,
     island_zone: IslandZone,
     island_helper: Option<std::process::Child>,
     feed_activity: Option<FeedActivity>,
@@ -258,6 +267,10 @@ pub enum Message {
     IslandHoverEnter,
     IslandHoverExit,
     IslandCursorLeft(Id),
+    IslandExpandIfHovered,
+    IslandCollapseIfIdle,
+    IslandSeekPreview(String, i64),
+    IslandSeekCommit(String),
     IslandFrame,
     IslandEqTick,
     IslandFeedAction(FeedActionKind),
@@ -626,6 +639,10 @@ fn island_notification_feed(device_id: &str, notif: &Notification) -> FeedActivi
         accent: [0.72, 0.58, 1.0],
         progress: None,
         progress_text: None,
+        position_ms: None,
+        length_ms: None,
+        can_seek: false,
+        device_name: String::new(),
         compact: None,
         primary: None,
         actions,
@@ -2249,7 +2266,7 @@ impl CosmicConnect {
                 key: format!("pairing:{device_id}"),
                 kind: FeedKind::Pairing,
                 device_id,
-                title: device_name,
+                title: device_name.clone(),
                 subtitle: "wants to pair".to_string(),
                 detail: Some("Accept to link this device".to_string()),
                 art: None,
@@ -2258,6 +2275,10 @@ impl CosmicConnect {
                 accent: [1.0, 0.72, 0.35],
                 progress: None,
                 progress_text: None,
+                position_ms: None,
+                length_ms: None,
+                can_seek: false,
+                device_name,
                 compact: None,
                 primary: None,
                 actions: vec![
@@ -2321,6 +2342,10 @@ impl CosmicConnect {
                 accent: [0.45, 0.90, 0.65],
                 progress: Some(percent as f32 / 100.0),
                 progress_text: Some(format!("{percent}%")),
+                position_ms: None,
+                length_ms: None,
+                can_seek: false,
+                device_name,
                 compact: Some(format!("{percent}%")),
                 primary: None,
                 actions: Vec::new(),
@@ -2349,6 +2374,10 @@ impl CosmicConnect {
                 accent: [1.0, 0.45, 0.45],
                 progress: None,
                 progress_text: None,
+                position_ms: None,
+                length_ms: None,
+                can_seek: false,
+                device_name,
                 compact: Some("Failed".to_string()),
                 primary: None,
                 actions: Vec::new(),
@@ -2396,6 +2425,10 @@ impl CosmicConnect {
                 accent: [0.45, 0.90, 0.65],
                 progress: Some(1.0),
                 progress_text: Some("Done".to_string()),
+                position_ms: None,
+                length_ms: None,
+                can_seek: false,
+                device_name,
                 compact: Some("Done".to_string()),
                 primary: None,
                 actions: Vec::new(),
@@ -2476,6 +2509,14 @@ impl CosmicConnect {
             accent: [0.55, 0.72, 1.0],
             progress,
             progress_text,
+            position_ms: if length > 0 {
+                Some(player.position.clamp(0, length))
+            } else {
+                None
+            },
+            length_ms: (length > 0).then_some(length),
+            can_seek: player.can_seek && length > 0,
+            device_name,
             compact: None,
             primary: Some(FeedAction {
                 label: play_label.to_string(),
@@ -2547,15 +2588,24 @@ impl CosmicConnect {
 
         let target = if expanded { 1.0 } else { 0.0 };
         let now = Instant::now();
+        let duration = if expanded {
+            ISLAND_MORPH_DURATION
+        } else {
+            ISLAND_COLLAPSE_MORPH_DURATION
+        };
 
         if self.island.is_none() {
-            self.island_morph = Some(island_morph_animation(target));
+            self.island_morph = Some(island_morph_animation(target, duration));
             return Task::none();
         }
 
         match self.island_morph.as_mut() {
-            Some(morph) => morph.go_mut(target, now),
-            None => self.island_morph = Some(island_morph_animation(target)),
+            Some(morph) => {
+                let current = morph.interpolate_with(|value| value, now);
+                *morph = island_morph_animation(current, duration);
+                morph.go_mut(target, now);
+            }
+            None => self.island_morph = Some(island_morph_animation(target, duration)),
         }
 
         let zone = if expanded {
@@ -2617,22 +2667,70 @@ impl CosmicConnect {
         Task::none()
     }
 
-    fn island_hover_enter(&mut self) {
+    fn island_hover_enter(&mut self) -> Task<Action<Message>> {
         if self.island.is_none() {
-            return;
+            return Task::none();
         }
         self.island_hovered = true;
         self.island_unhover_at = None;
         if !self.island_expanded {
             self.island_hover_at = Some(Instant::now());
+            return Task::perform(
+                async { tokio::time::sleep(ISLAND_HOVER_EXPAND_DELAY).await },
+                |_| Message::IslandExpandIfHovered,
+            )
+            .map(cosmic::Action::App);
         }
+        Task::none()
     }
 
-    fn island_hover_exit(&mut self) {
+    fn island_hover_exit(&mut self) -> Task<Action<Message>> {
         self.island_hovered = false;
         self.island_hover_at = None;
         if self.island_expanded && !self.island_pinned {
             self.island_unhover_at = Some(Instant::now());
+            return Task::perform(
+                async { tokio::time::sleep(ISLAND_HOVER_COLLAPSE_DELAY).await },
+                |_| Message::IslandCollapseIfIdle,
+            )
+            .map(cosmic::Action::App);
+        }
+        Task::none()
+    }
+
+    fn reconcile_island_seek_preview(&mut self, key_changed: bool) {
+        if key_changed {
+            self.island_seek_preview = None;
+            self.island_seek_dragging = false;
+            self.island_seek_preview_at = None;
+            return;
+        }
+        if self.island_seek_dragging {
+            return;
+        }
+        let Some(preview) = self.island_seek_preview else {
+            return;
+        };
+        let position = self
+            .feed_activity
+            .as_ref()
+            .and_then(|activity| activity.position_ms);
+        if position.is_some_and(|position| (preview - position).abs() <= 1500) {
+            self.island_seek_preview = None;
+            self.island_seek_preview_at = None;
+        }
+    }
+
+    fn tick_island_seek_preview(&mut self) {
+        if self.island_seek_dragging {
+            return;
+        }
+        if self
+            .island_seek_preview_at
+            .is_some_and(|at| at.elapsed() > Duration::from_secs(3))
+        {
+            self.island_seek_preview = None;
+            self.island_seek_preview_at = None;
         }
     }
 
@@ -2644,6 +2742,9 @@ impl CosmicConnect {
         self.island_unhover_at = None;
         self.island_morph = None;
         self.island_eq_phase = 0.0;
+        self.island_seek_preview = None;
+        self.island_seek_dragging = false;
+        self.island_seek_preview_at = None;
     }
 
     fn refresh_island(&mut self) -> Task<Action<Message>> {
@@ -2667,6 +2768,7 @@ impl CosmicConnect {
             self.island_unhover_at = None;
         }
         self.feed_activity = activity;
+        self.reconcile_island_seek_preview(key_changed);
         let expand = key_changed
             && self
                 .feed_activity
@@ -2688,6 +2790,7 @@ impl CosmicConnect {
             self.island_unhover_at = None;
         }
         self.feed_activity = activity;
+        self.reconcile_island_seek_preview(key_changed);
         let expand = key_changed
             && self
                 .feed_activity
@@ -2706,6 +2809,7 @@ impl CosmicConnect {
             return Task::none();
         };
         let device_id = activity.device_id.clone();
+        log::info!("Island: feed action {action:?} for {device_id}");
         match action {
             FeedActionKind::Media(action) => Task::perform(async {}, move |_| {
                 Message::PerformAction(device_id, ActionType::MediaAction(action))
@@ -2992,11 +3096,10 @@ impl CosmicConnect {
         };
         self.island = Some(id);
         self.island_zone = initial_zone;
-        self.island_morph = Some(island_morph_animation(if self.island_expanded {
-            1.0
-        } else {
-            0.0
-        }));
+        self.island_morph = Some(island_morph_animation(
+            if self.island_expanded { 1.0 } else { 0.0 },
+            ISLAND_MORPH_DURATION,
+        ));
         log::info!("Island: spawning layer surface {id:?} zone={initial_zone:?}");
 
         surface::surface_task(surface::action::app_layer_shell(
@@ -3091,6 +3194,11 @@ impl CosmicConnect {
             },
             progress: activity.progress,
             progress_text: activity.progress_text.clone(),
+            device_id: activity.device_id.clone(),
+            device_name: activity.device_name.clone(),
+            position_ms: activity.position_ms,
+            length_ms: activity.length_ms,
+            can_seek: activity.can_seek,
             compact: activity.compact.clone(),
             actions,
             lock_expanded: activity.kind == FeedKind::Pairing,
@@ -3223,6 +3331,11 @@ impl CosmicConnect {
             art_icon,
             progress,
             progress_text,
+            device_id,
+            device_name,
+            position_ms,
+            length_ms,
+            can_seek,
             actions,
             lock_expanded,
             ..
@@ -3271,7 +3384,7 @@ impl CosmicConnect {
         let collapse: Element<'_, Action<Message>> = if lock_expanded {
             container(row![]).width(Length::Fixed(0.0)).into()
         } else {
-            island_icon_button("pan-up-symbolic", Message::IslandCollapse, accent)
+            island_icon_button("go-up-symbolic", Message::IslandCollapse, accent, false)
         };
 
         let header = row![art, heading, badge, collapse,]
@@ -3290,26 +3403,68 @@ impl CosmicConnect {
         }
 
         if let Some(progress) = progress {
-            let bar = progress_bar::determinate_linear(progress)
-                .width(Length::Fill)
-                .girth(4);
-
-            let mut progress_row = row![bar].spacing(8).align_y(Alignment::Center);
-            if let Some(progress_text) = progress_text {
-                progress_row = progress_row.push(
-                    text::text(progress_text)
-                        .size(9.5)
-                        .line_height(LineHeight::Absolute(12.0.into()))
-                        .class(theme::Text::Color(Color::from_rgb(0.66, 0.70, 0.78))),
+            if kind == FeedKind::Media && can_seek && length_ms.is_some_and(|length| length > 0) {
+                let length = length_ms.unwrap_or_default().clamp(1, i32::MAX as i64);
+                let current = self
+                    .island_seek_preview
+                    .or(position_ms)
+                    .unwrap_or_default()
+                    .clamp(0, length);
+                let seek_device = device_id.clone();
+                let commit_device = device_id.clone();
+                let seek: Element<'_, Message> =
+                    slider(0..=length as i32, current as i32, move |value| {
+                        Message::IslandSeekPreview(seek_device.clone(), i64::from(value))
+                    })
+                    .on_release(Message::IslandSeekCommit(commit_device))
+                    .step(1000_i32)
+                    .height(20)
+                    .handle_height(16)
+                    .width(Length::Fill)
+                    .into();
+                let seek: Element<'_, Action<Message>> = seek.map(Action::App);
+                body = body.push(
+                    row![
+                        text::text(format_ms(current))
+                            .size(9.5)
+                            .line_height(LineHeight::Absolute(12.0.into()))
+                            .class(theme::Text::Color(Color::from_rgb(0.66, 0.70, 0.78))),
+                        seek,
+                        text::text(format_ms(length))
+                            .size(9.5)
+                            .line_height(LineHeight::Absolute(12.0.into()))
+                            .class(theme::Text::Color(Color::from_rgb(0.66, 0.70, 0.78))),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 );
+            } else {
+                let bar = progress_bar::determinate_linear(progress)
+                    .width(Length::Fill)
+                    .girth(4);
+
+                let mut progress_row = row![bar].spacing(8).align_y(Alignment::Center);
+                if let Some(progress_text) = progress_text {
+                    progress_row = progress_row.push(
+                        text::text(progress_text)
+                            .size(9.5)
+                            .line_height(LineHeight::Absolute(12.0.into()))
+                            .class(theme::Text::Color(Color::from_rgb(0.66, 0.70, 0.78))),
+                    );
+                }
+                body = body.push(progress_row);
             }
-            body = body.push(progress_row);
         }
 
-        if !actions.is_empty() {
+        if !actions.is_empty() || (kind == FeedKind::Media && !device_name.is_empty()) {
             let mut action_row = row![].spacing(6).align_y(Alignment::Center);
             for action in actions {
                 action_row = action_row.push(action);
+            }
+            if kind == FeedKind::Media && !device_name.is_empty() {
+                action_row = action_row
+                    .push(container(row![]).width(Length::Fill))
+                    .push(island_device_chip(device_name, accent));
             }
             body = body.push(container(row![]).height(Length::Fill));
             body = body.push(action_row);
@@ -4574,6 +4729,7 @@ impl cosmic::Application for CosmicConnect {
                 self.device_list_open = !self.device_list_open;
             }
             Message::IslandReconcile => {
+                self.tick_island_seek_preview();
                 return self.refresh_island().chain(self.tick_island_hover());
             }
             Message::IslandToggleExpand => {
@@ -4583,15 +4739,93 @@ impl cosmic::Application for CosmicConnect {
                 return self.collapse_island();
             }
             Message::IslandHoverEnter => {
-                self.island_hover_enter();
+                return self.island_hover_enter();
             }
             Message::IslandHoverExit => {
-                self.island_hover_exit();
+                return self.island_hover_exit();
             }
             Message::IslandCursorLeft(id) => {
                 if Some(id) == self.island {
-                    self.island_hover_exit();
+                    return self.island_hover_exit();
                 }
+            }
+            Message::IslandExpandIfHovered => {
+                if self.island.is_none() || self.island_expanded || !self.island_hovered {
+                    return Task::none();
+                }
+                if self
+                    .island_hover_at
+                    .is_some_and(|at| at.elapsed() >= ISLAND_HOVER_EXPAND_DELAY)
+                {
+                    return self.set_island_expanded(true, false);
+                }
+            }
+            Message::IslandCollapseIfIdle => {
+                if self.island.is_none()
+                    || !self.island_expanded
+                    || self.island_hovered
+                    || self.island_pinned
+                {
+                    return Task::none();
+                }
+                let pairing = self
+                    .feed_activity
+                    .as_ref()
+                    .is_some_and(|activity| activity.kind == FeedKind::Pairing);
+                if pairing {
+                    return Task::none();
+                }
+                if self
+                    .island_unhover_at
+                    .is_some_and(|at| at.elapsed() >= ISLAND_HOVER_COLLAPSE_DELAY)
+                {
+                    return self.set_island_expanded(false, false);
+                }
+            }
+            Message::IslandSeekPreview(device_id, position) => {
+                let length = self
+                    .feed_activity
+                    .as_ref()
+                    .filter(|activity| activity.device_id == device_id && activity.can_seek)
+                    .and_then(|activity| activity.length_ms)
+                    .filter(|length| *length > 0);
+                let Some(length) = length else {
+                    return Task::none();
+                };
+                self.island_seek_preview = Some(position.clamp(0, length));
+                self.island_seek_dragging = true;
+                self.island_seek_preview_at = Some(Instant::now());
+            }
+            Message::IslandSeekCommit(device_id) => {
+                self.island_seek_dragging = false;
+                let (matches, can_seek, current) = self
+                    .feed_activity
+                    .as_ref()
+                    .map(|activity| {
+                        (
+                            activity.device_id == device_id,
+                            activity.can_seek,
+                            activity.position_ms,
+                        )
+                    })
+                    .unwrap_or((false, false, None));
+                if !matches || !can_seek {
+                    self.island_seek_preview = None;
+                    return Task::none();
+                }
+                let Some(position) = self.island_seek_preview else {
+                    return Task::none();
+                };
+                if current.is_some_and(|current| (position - current).abs() < 500) {
+                    self.island_seek_preview = None;
+                    self.island_seek_preview_at = None;
+                    return Task::none();
+                }
+                self.island_seek_preview_at = Some(Instant::now());
+                return Task::perform(async {}, move |_| {
+                    Message::PerformAction(device_id, ActionType::Seek(position))
+                })
+                .map(cosmic::Action::App);
             }
             Message::IslandFrame => {}
             Message::IslandEqTick => {
@@ -5148,6 +5382,10 @@ fn island_set_zone(id: Id, zone: IslandZone) -> Task<Action<Message>> {
 
 fn island_feed_action<'a>(action: &'a FeedAction, accent: Color) -> Element<'a, Action<Message>> {
     let message = Message::IslandFeedAction(action.action.clone());
+    let primary = matches!(
+        &action.action,
+        FeedActionKind::Media(kind) if kind == "PlayPause"
+    );
     if action.as_text {
         island_text_button(&action.label, message, accent)
     } else {
@@ -5156,7 +5394,7 @@ fn island_feed_action<'a>(action: &'a FeedAction, accent: Color) -> Element<'a, 
         } else {
             action.icon.as_str()
         };
-        island_icon_button(icon_name, message, accent)
+        island_icon_button(icon_name, message, accent, primary)
     }
 }
 
@@ -5215,9 +5453,9 @@ fn island_art_or_ring<'a>(
 fn island_eq<'a>(phase: f32, accent: Color) -> Element<'a, Action<Message>> {
     let mut bars = row![].spacing(2).align_y(Alignment::Center);
 
-    for (index, scale) in [0.62_f32, 1.0, 0.78].into_iter().enumerate() {
-        let wave = ((phase + index as f32 * 0.24) * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-        let height = (4.0 + wave * 10.0) * scale + 3.0;
+    for (index, scale) in [0.52_f32, 1.0, 0.68, 0.38].into_iter().enumerate() {
+        let wave = ((phase + index as f32 * 0.18) * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+        let height = (5.0 + wave * 10.0) * scale + 2.0;
         bars = bars.push(
             container(row![])
                 .width(Length::Fixed(3.0))
@@ -5243,9 +5481,9 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
     start + (end - start) * t
 }
 
-fn island_morph_animation(target: f32) -> Animation<f32> {
+fn island_morph_animation(target: f32, duration: Duration) -> Animation<f32> {
     Animation::new(target)
-        .duration(ISLAND_MORPH_DURATION)
+        .duration(duration)
         .easing(Easing::EaseOutBack)
 }
 
@@ -5312,26 +5550,64 @@ fn island_capsule_style(
     }
 }
 
+fn island_device_chip<'a>(name: String, accent: Color) -> Element<'a, Action<Message>> {
+    let dot = container(row![])
+        .width(Length::Fixed(5.0))
+        .height(Length::Fixed(5.0))
+        .style(move |_theme: &cosmic::Theme| iced_container::Style {
+            background: Some(Background::Color(accent)),
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(accent.r, accent.g, accent.b, 0.55),
+                offset: Vector::new(0.0, 0.0),
+                blur_radius: 8.0,
+            },
+            ..Default::default()
+        });
+
+    row![
+        dot,
+        text::text(name)
+            .size(10.5)
+            .line_height(LineHeight::Absolute(12.0.into()))
+            .class(theme::Text::Color(Color::from_rgb(0.553, 0.596, 0.667))),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .into()
+}
+
 fn island_icon_button<'a>(
     icon_name: &'a str,
     message: Message,
     accent: Color,
+    primary: bool,
 ) -> Element<'a, Action<Message>> {
+    let primary_icon = Color::from_rgb(0.06, 0.07, 0.10);
     button::custom(icon::from_name(icon_name).size(15))
         .on_press(Action::App(message))
         .padding(6)
         .class(theme::Button::Custom {
             active: Box::new(move |focused, _theme| button::Style {
-                background: Some(Background::Color(Color::from_rgba(
-                    1.0,
-                    1.0,
-                    1.0,
-                    if focused { 0.16 } else { 0.08 },
-                ))),
+                background: Some(Background::Color(if primary {
+                    Color::from_rgba(
+                        accent.r,
+                        accent.g,
+                        accent.b,
+                        if focused { 0.95 } else { 0.85 },
+                    )
+                } else {
+                    Color::from_rgba(1.0, 1.0, 1.0, if focused { 0.16 } else { 0.08 })
+                })),
                 border_radius: 14.0.into(),
                 border_width: if focused { 1.0 } else { 0.0 },
                 border_color: if focused { accent } else { Color::TRANSPARENT },
-                icon_color: Some(if focused {
+                icon_color: Some(if primary {
+                    primary_icon
+                } else if focused {
                     accent
                 } else {
                     Color::from_rgb(0.92, 0.93, 0.96)
@@ -5339,17 +5615,29 @@ fn island_icon_button<'a>(
                 ..button::Style::new()
             }),
             hovered: Box::new(move |_focused, _theme| button::Style {
-                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.16))),
+                background: Some(Background::Color(if primary {
+                    Color::from_rgba(accent.r, accent.g, accent.b, 0.95)
+                } else {
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.16)
+                })),
                 border_radius: 14.0.into(),
                 border_width: 1.0,
-                border_color: Color::from_rgba(accent.r, accent.g, accent.b, 0.35),
-                icon_color: Some(accent),
+                border_color: if primary {
+                    accent
+                } else {
+                    Color::from_rgba(accent.r, accent.g, accent.b, 0.35)
+                },
+                icon_color: Some(if primary { primary_icon } else { accent }),
                 ..button::Style::new()
             }),
             pressed: Box::new(move |_focused, _theme| button::Style {
-                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.20))),
+                background: Some(Background::Color(if primary {
+                    Color::from_rgba(accent.r, accent.g, accent.b, 1.0)
+                } else {
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.20)
+                })),
                 border_radius: 14.0.into(),
-                icon_color: Some(accent),
+                icon_color: Some(if primary { primary_icon } else { accent }),
                 ..button::Style::new()
             }),
             disabled: Box::new(|_theme| button::Style {
