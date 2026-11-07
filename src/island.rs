@@ -19,6 +19,7 @@ pub enum FeedKind {
     Transfer,
     Media,
     Pairing,
+    Notification,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,6 +28,7 @@ pub enum FeedActionKind {
     Media(String),
     AcceptPairing,
     CancelPairing,
+    DismissNotification(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
