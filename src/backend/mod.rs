@@ -542,7 +542,7 @@ impl KdeConnectBackend {
         notifs
     }
 
-    async fn fetch_notification(&self, device_id: &str, notif_id: &str) -> Option<Notification> {
+    pub async fn fetch_notification(&self, device_id: &str, notif_id: &str) -> Option<Notification> {
         let proxy = self.notification_proxy(device_id, notif_id).await.ok()?;
 
         Some(Notification {
@@ -663,6 +663,23 @@ impl KdeConnectBackend {
     }
 
     pub async fn notify(&self, title: &str, body: &str, replaces_id: u32, actions: &[&str]) -> Result<u32> {
+        self.notify_with_icon(
+            title,
+            body,
+            replaces_id,
+            actions,
+            "io.github.acemythos.Connect-symbolic",
+        ).await
+    }
+
+    pub async fn notify_with_icon(
+        &self,
+        title: &str,
+        body: &str,
+        replaces_id: u32,
+        actions: &[&str],
+        icon: &str,
+    ) -> Result<u32> {
         let proxy = Proxy::new(
             &self.conn,
             "org.freedesktop.Notifications",
@@ -675,7 +692,7 @@ impl KdeConnectBackend {
         let notif_id: u32 = proxy.call("Notify", &(
             "COSMIC Connect",
             replaces_id,
-            "io.github.acemythos.Connect-symbolic",
+            icon,
             title,
             body,
             actions_vec,
@@ -684,5 +701,16 @@ impl KdeConnectBackend {
         )).await?;
 
         Ok(notif_id)
+    }
+
+    pub async fn close_notification(&self, notif_id: u32) -> Result<()> {
+        let proxy = Proxy::new(
+            &self.conn,
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+        ).await?;
+
+        proxy.call::<_, _, ()>("CloseNotification", &(notif_id,)).await
     }
 }

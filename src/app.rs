@@ -43,6 +43,7 @@ use futures_util::StreamExt;
 use zbus::{MatchRule, MessageStream};
 
 use crate::backend::KdeConnectBackend;
+use crate::island::{FeedAction, FeedActionKind, FeedActivity, FeedKind};
 use crate::model::{
     ActionType, ConnectivityInfo, Device, DeviceType, Notification, PlayerInfo, ReceivedFile,
 };
@@ -63,7 +64,14 @@ const ISLAND_PEEK_WIDTH: f32 = 280.0;
 const ISLAND_PEEK_HEIGHT: f32 = 40.0;
 const ISLAND_EXPANDED_WIDTH: f32 = 420.0;
 const ISLAND_EXPANDED_HEIGHT: f32 = 148.0;
-const ISLAND_RECONCILE_INTERVAL: Duration = Duration::from_millis(500);
+const ISLAND_RECONCILE_INTERVAL: Duration = Duration::from_millis(250);
+const HELPER_FEED_INTERVAL: Duration = Duration::from_millis(200);
+const PLAYER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const TRANSFER_DONE_HOLD: Duration = Duration::from_secs(4);
+const TRANSFER_FAIL_HOLD: Duration = Duration::from_secs(6);
+const MEDIA_PAUSE_HOLD: Duration = Duration::from_secs(3);
+const HELPER_IDLE_GRACE: Duration = Duration::from_secs(8);
+const HELPER_HIDDEN_EXIT: Duration = Duration::from_secs(5);
 
 static POPUP_AUTOSIZE_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("cosmic-connect-popup"));
@@ -92,43 +100,11 @@ enum IslandZone {
     Expanded,
 }
 
-enum IslandActivity<'a> {
-    Alert(&'a Notification),
-    Media {
-        player: &'a PlayerInfo,
-        art: Option<&'a str>,
-    },
-    Transfer(&'a ReceivedFile),
-}
-
-impl IslandActivity<'_> {
-    fn accent(&self) -> Color {
-        match self {
-            Self::Alert(_) => Color::from_rgb(1.0, 0.72, 0.35),
-            Self::Media { .. } => Color::from_rgb(0.55, 0.72, 1.0),
-            Self::Transfer(_) => Color::from_rgb(0.45, 0.90, 0.65),
-        }
-    }
-
-    fn badge(&self) -> String {
-        match self {
-            Self::Alert(notif) => {
-                if notif.app_name.trim().is_empty() {
-                    "ALERT".to_string()
-                } else {
-                    notif.app_name.to_uppercase()
-                }
-            }
-            Self::Media { player, .. } => {
-                if player.is_playing {
-                    "PLAYING".to_string()
-                } else {
-                    "PAUSED".to_string()
-                }
-            }
-            Self::Transfer(_) => "TRANSFER".to_string(),
-        }
-    }
+struct TransferFailure {
+    file_name: String,
+    device_id: String,
+    error: String,
+    at: Instant,
 }
 
 struct IslandCard<'a> {
@@ -141,8 +117,10 @@ struct IslandCard<'a> {
     art_icon: &'a str,
     progress: Option<f32>,
     progress_text: Option<String>,
+    compact: Option<String>,
     primary_action: Option<Element<'a, Action<Message>>>,
     actions: Vec<Element<'a, Action<Message>>>,
+    lock_expanded: bool,
 }
 
 #[derive(Default)]
@@ -156,6 +134,8 @@ struct DeviceDraft {
     selected_notification: Option<String>,
     notify_reply_text: String,
     player: Option<PlayerInfo>,
+    player_updated_at: Option<Instant>,
+    player_last_active: Option<Instant>,
     connectivity: Option<ConnectivityInfo>,
     seek_preview: Option<i64>,
     composer_mode: ShareKind,
@@ -185,13 +165,25 @@ pub struct CosmicConnect {
     deferred_notifs: HashMap<String, (String, String, String)>,
     notified_pair_ids: HashSet<String>,
     pairing_notifs: HashMap<u32, String>,
+    phone_toasts: HashMap<String, u32>,
     last_sync: Option<Instant>,
     compact_panel: bool,
     panel_bolt_dimmed: bool,
     island: Option<Id>,
-    island_pinned: bool,
     island_expanded: bool,
     island_zone: IslandZone,
+    island_helper: Option<std::process::Child>,
+    feed_activity: Option<FeedActivity>,
+    feed_key: Option<String>,
+    last_feed_line: Option<String>,
+    helper_idle_since: Option<Instant>,
+    helper_feed_seq: u64,
+    helper_hidden_at: Option<Instant>,
+    pairing_requests: HashSet<String>,
+    transfer_failures: HashMap<String, TransferFailure>,
+    player_refresh_inflight: bool,
+    panel_hosted: bool,
+    helper_mode: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +191,7 @@ pub enum Message {
     TogglePopup,
     RefreshDevices,
     PopupClosed(Id),
+    HelperWindowOpened(Id),
     BackendReady(Arc<KdeConnectBackend>),
     DevicesUpdated(Vec<Device>, Vec<String>),
     BackendError(String),
@@ -216,6 +209,11 @@ pub enum Message {
     SendNotifyReply(String, String),
     DismissNotification(String, String),
     DismissAllNotifications(String),
+    PhoneNotificationChanged(String, String),
+    PhoneNotificationRemoved(String, String),
+    PhoneNotificationsCleared(String),
+    PhoneNotificationFetched(String, String, Option<Notification>),
+    PhoneToastShown(String, Result<u32, String>),
     RefreshPlayer(String),
     PlayerInfoUpdated(String, Option<PlayerInfo>),
     MediaAction(String, String),
@@ -228,9 +226,12 @@ pub enum Message {
     ConfirmUnpair,
     ToggleAdvanced(String),
     ToggleDeviceList,
-    ToggleIsland,
     IslandReconcile,
     IslandToggleExpand,
+    IslandFeedAction(FeedActionKind),
+    HelperFeedPoll,
+    HelperExitCheck,
+    PlayerTick,
     SetCompactPanel(bool),
     SetPopupView(PopupView),
     SelectShareKind(String, ShareKind),
@@ -493,6 +494,10 @@ fn parse_device_signal_path(path: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((device_id, plugin))
+}
+
+fn phone_toast_key(device_id: &str, public_id: &str) -> String {
+    format!("{device_id}\u{0}{public_id}")
 }
 
 impl CosmicConnect {
@@ -1987,17 +1992,7 @@ impl CosmicConnect {
             content.push(section);
         }
         content.push(divider::horizontal::default().into());
-        content.push(self.render_sub_header("Labs", None));
-        content.push(crate::widgets::nav_row(
-            "preferences-system-symbolic",
-            if self.island.is_some() {
-                "Close floating island".to_string()
-            } else {
-                "Open floating island".to_string()
-            },
-            "Live activity".to_string(),
-            Message::ToggleIsland,
-        ));
+        content.push(self.render_sub_header("Panel", None));
         content.push(self.render_panel_settings());
         if let Some(status) = self.render_status_banner(draft) {
             content.push(status);
@@ -2006,73 +2001,436 @@ impl CosmicConnect {
         column::with_children(content).spacing(10).into()
     }
 
-    fn live_activity(&self) -> Option<IslandActivity<'_>> {
-        let device = self.selected_device()?;
-        if !device.is_reachable {
+    fn selected_device_name(&self, device_id: &str) -> String {
+        self.devices
+            .iter()
+            .find(|device| device.id == device_id)
+            .map(|device| device.name.clone())
+            .unwrap_or_else(|| device_id.to_string())
+    }
+
+    fn current_feed(&mut self) -> Option<FeedActivity> {
+        let now = Instant::now();
+        self.transfer_failures
+            .retain(|_, failure| now.duration_since(failure.at) < TRANSFER_FAIL_HOLD);
+
+        let pairing_device = self
+            .devices
+            .iter()
+            .find(|device| !device.is_paired && self.pairing_requests.contains(&device.id))
+            .or_else(|| {
+                self.devices
+                    .iter()
+                    .find(|device| !device.is_paired && device.pair_state == 2)
+            });
+        if let Some(device) = pairing_device {
+            let device_id = device.id.clone();
+            let device_name = device.name.clone();
+            let icon = device.device_type.icon_name().to_string();
+            return Some(FeedActivity {
+                key: format!("pairing:{device_id}"),
+                kind: FeedKind::Pairing,
+                device_id,
+                title: device_name,
+                subtitle: "wants to pair".to_string(),
+                detail: Some("Accept to link this device".to_string()),
+                art: None,
+                icon,
+                badge: "PAIR".to_string(),
+                accent: [1.0, 0.72, 0.35],
+                progress: None,
+                progress_text: None,
+                compact: None,
+                primary: None,
+                actions: vec![
+                    FeedAction {
+                        label: "Decline".to_string(),
+                        icon: "window-close-symbolic".to_string(),
+                        action: FeedActionKind::CancelPairing,
+                        as_text: true,
+                    },
+                    FeedAction {
+                        label: "Accept".to_string(),
+                        icon: "emblem-ok-symbolic".to_string(),
+                        action: FeedActionKind::AcceptPairing,
+                        as_text: true,
+                    },
+                ],
+                expand: true,
+                expires_at_ms: None,
+            });
+        }
+
+        let active_transfer = self
+            .received_files
+            .iter()
+            .flat_map(|(device_id, files)| {
+                files
+                    .iter()
+                    .map(move |file| (device_id.as_str(), file))
+            })
+            .filter(|(_, file)| file.active)
+            .max_by_key(|(_, file)| file.received_at);
+        if let Some((device_id, file)) = active_transfer {
+            let device_id = device_id.to_string();
+            let device_name = self.selected_device_name(&device_id);
+            let transfer_id = if file.transfer_id.is_empty() {
+                file.file_name.clone()
+            } else {
+                file.transfer_id.clone()
+            };
+            let percent = file.progress.min(100);
+            let transferred = file.total_bytes.saturating_mul(percent as u64) / 100;
+            let detail = if file.total_bytes > 0 {
+                format!(
+                    "{percent}% · {} of {}",
+                    format_bytes(transferred),
+                    format_bytes(file.total_bytes)
+                )
+            } else {
+                format!("{percent}% received")
+            };
+            return Some(FeedActivity {
+                key: format!("transfer:{device_id}:{transfer_id}"),
+                kind: FeedKind::Transfer,
+                device_id,
+                title: file.file_name.clone(),
+                subtitle: format!("Incoming from {device_name}"),
+                detail: Some(detail),
+                art: None,
+                icon: "document-save-symbolic".to_string(),
+                badge: "RECEIVING".to_string(),
+                accent: [0.45, 0.90, 0.65],
+                progress: Some(percent as f32 / 100.0),
+                progress_text: Some(format!("{percent}%")),
+                compact: Some(format!("{percent}%")),
+                primary: None,
+                actions: Vec::new(),
+                expand: false,
+                expires_at_ms: None,
+            });
+        }
+
+        let failure = self
+            .transfer_failures
+            .iter()
+            .max_by_key(|(_, failure)| failure.at)
+            .map(|(key, failure)| (key.clone(), failure));
+        if let Some((key, failure)) = failure {
+            let device_name = self.selected_device_name(&failure.device_id);
+            return Some(FeedActivity {
+                key: format!("transfer-fail:{key}"),
+                kind: FeedKind::Transfer,
+                device_id: failure.device_id.clone(),
+                title: failure.file_name.clone(),
+                subtitle: format!("Transfer failed · {device_name}"),
+                detail: Some(failure.error.clone()),
+                art: None,
+                icon: "dialog-error-symbolic".to_string(),
+                badge: "FAILED".to_string(),
+                accent: [1.0, 0.45, 0.45],
+                progress: None,
+                progress_text: None,
+                compact: Some("Failed".to_string()),
+                primary: None,
+                actions: Vec::new(),
+                expand: false,
+                expires_at_ms: None,
+            });
+        }
+
+        let done_transfer = self
+            .received_files
+            .iter()
+            .flat_map(|(device_id, files)| {
+                files
+                    .iter()
+                    .map(move |file| (device_id.as_str(), file))
+            })
+            .filter(|(_, file)| {
+                !file.active
+                    && file.progress >= 100
+                    && std::time::SystemTime::now()
+                        .duration_since(file.received_at)
+                        .map(|elapsed| elapsed < TRANSFER_DONE_HOLD)
+                        .unwrap_or(false)
+            })
+            .max_by_key(|(_, file)| file.received_at);
+        if let Some((device_id, file)) = done_transfer {
+            let device_id = device_id.to_string();
+            let device_name = self.selected_device_name(&device_id);
+            let transfer_id = if file.transfer_id.is_empty() {
+                format!("file:{}", file.file_path)
+            } else {
+                file.transfer_id.clone()
+            };
+            let detail = if file.total_bytes > 0 {
+                format!("{} · saved", format_bytes(file.total_bytes))
+            } else {
+                "Saved to Downloads".to_string()
+            };
+            return Some(FeedActivity {
+                key: format!("transfer-done:{device_id}:{transfer_id}"),
+                kind: FeedKind::Transfer,
+                device_id,
+                title: file.file_name.clone(),
+                subtitle: format!("Received from {device_name}"),
+                detail: Some(detail),
+                art: None,
+                icon: "emblem-ok-symbolic".to_string(),
+                badge: "RECEIVED".to_string(),
+                accent: [0.45, 0.90, 0.65],
+                progress: Some(1.0),
+                progress_text: Some("Done".to_string()),
+                compact: Some("Done".to_string()),
+                primary: None,
+                actions: Vec::new(),
+                expand: false,
+                expires_at_ms: None,
+            });
+        }
+
+        let device_id = self.selected_device_id.clone()?;
+        let device_name = self.selected_device_name(&device_id);
+        let draft = self.drafts.get(&device_id)?;
+        let player = draft.player.as_ref()?.clone();
+        if player.title.trim().is_empty() {
             return None;
         }
-        let draft = self.drafts.get(&device.id)?;
-
-        let player = draft
-            .player
-            .as_ref()
-            .filter(|player| !player.title.trim().is_empty());
-
-        let alert = draft.notifications.iter().rev().find(|notif| {
-            !notif.dismissable
-                && !notif.silent
-                && !player.is_some_and(|player| island_media_mirror(notif, player))
-        });
-        if let Some(notif) = alert {
-            return Some(IslandActivity::Alert(notif));
+        let show_media = player.is_playing
+            || draft
+                .player_last_active
+                .is_some_and(|at| at.elapsed() < MEDIA_PAUSE_HOLD);
+        if !show_media {
+            return None;
         }
-
-        if let Some(player) = player {
-            let art = draft
-                .notifications
-                .iter()
-                .find(|notif| {
-                    island_media_mirror(notif, player) && !notif.icon_path.trim().is_empty()
-                })
-                .map(|notif| notif.icon_path.as_str());
-            return Some(IslandActivity::Media { player, art });
-        }
-
-        self.received_files
-            .get(&device.id)
-            .and_then(|files| files.iter().rev().find(|file| file.active))
-            .map(IslandActivity::Transfer)
+        let player_app = player.player.trim();
+        let art = draft
+            .notifications
+            .iter()
+            .rev()
+            .find(|notification| {
+                !player_app.is_empty()
+                    && !notification.icon_path.trim().is_empty()
+                    && notification
+                        .app_name
+                        .trim()
+                        .eq_ignore_ascii_case(player_app)
+            })
+            .map(|notification| notification.icon_path.clone());
+        let subtitle = if !player.artist.trim().is_empty() {
+            player.artist.clone()
+        } else if !player.album.trim().is_empty() {
+            player.album.clone()
+        } else {
+            device_name.clone()
+        };
+        let detail = if !player.album.trim().is_empty() {
+            Some(player.album.clone())
+        } else {
+            Some(format!("Playing on {device_name}"))
+        };
+        let length = player.length.max(0);
+        let (progress, progress_text) = if length > 0 {
+            let position = player.position.clamp(0, length);
+            (
+                Some(position as f32 / length as f32),
+                Some(format!("{} / {}", format_ms(position), format_ms(length))),
+            )
+        } else {
+            (None, None)
+        };
+        let (play_label, play_icon) = if player.is_playing {
+            ("Pause", "media-playback-pause-symbolic")
+        } else {
+            ("Play", "media-playback-start-symbolic")
+        };
+        Some(FeedActivity {
+            key: format!("media:{device_id}"),
+            kind: FeedKind::Media,
+            device_id,
+            title: player.title.clone(),
+            subtitle,
+            detail,
+            art,
+            icon: "audio-x-generic-symbolic".to_string(),
+            badge: if player.is_playing {
+                "PLAYING".to_string()
+            } else {
+                "PAUSED".to_string()
+            },
+            accent: [0.55, 0.72, 1.0],
+            progress,
+            progress_text,
+            compact: None,
+            primary: Some(FeedAction {
+                label: play_label.to_string(),
+                icon: play_icon.to_string(),
+                action: FeedActionKind::Media("PlayPause".to_string()),
+                as_text: false,
+            }),
+            actions: vec![
+                FeedAction {
+                    label: "Previous".to_string(),
+                    icon: "media-skip-backward-symbolic".to_string(),
+                    action: FeedActionKind::Media("Previous".to_string()),
+                    as_text: false,
+                },
+                FeedAction {
+                    label: play_label.to_string(),
+                    icon: play_icon.to_string(),
+                    action: FeedActionKind::Media("PlayPause".to_string()),
+                    as_text: false,
+                },
+                FeedAction {
+                    label: "Next".to_string(),
+                    icon: "media-skip-forward-symbolic".to_string(),
+                    action: FeedActionKind::Media("Next".to_string()),
+                    as_text: false,
+                },
+            ],
+            expand: false,
+            expires_at_ms: None,
+        })
     }
 
     fn island_target_zone(&self) -> IslandZone {
-        if self.live_activity().is_none() {
-            return if self.island_pinned {
-                IslandZone::Peek
-            } else {
-                IslandZone::Hidden
-            };
-        }
-
-        if self.island_expanded {
+        if self.feed_activity.is_none() {
+            IslandZone::Hidden
+        } else if self.island_expanded {
             IslandZone::Expanded
         } else {
             IslandZone::Peek
         }
     }
 
+    fn refresh_island(&mut self) -> Task<Action<Message>> {
+        if self.helper_mode {
+            return Task::none();
+        }
+        let activity = self.current_feed();
+        let key_changed = activity.as_ref().map(|a| a.key.as_str()) != self.feed_key.as_deref();
+        if key_changed {
+            self.feed_key = activity.as_ref().map(|activity| activity.key.clone());
+            self.island_expanded = activity.as_ref().is_some_and(|activity| activity.expand);
+        }
+        self.feed_activity = activity;
+        self.sync_island()
+    }
+
+    fn apply_feed(&mut self, activity: Option<FeedActivity>) -> Task<Action<Message>> {
+        let key_changed = activity.as_ref().map(|a| a.key.as_str()) != self.feed_key.as_deref();
+        if key_changed {
+            self.feed_key = activity.as_ref().map(|activity| activity.key.clone());
+            self.island_expanded = activity.as_ref().is_some_and(|activity| activity.expand);
+        }
+        self.feed_activity = activity;
+        self.sync_island()
+    }
+
+    fn handle_feed_action(&mut self, action: FeedActionKind) -> Task<Action<Message>> {
+        let Some(activity) = self.feed_activity.clone() else {
+            return Task::none();
+        };
+        let device_id = activity.device_id.clone();
+        match action {
+            FeedActionKind::Media(action) => Task::perform(async {}, move |_| {
+                Message::PerformAction(device_id, ActionType::MediaAction(action))
+            })
+            .map(cosmic::Action::App),
+            FeedActionKind::AcceptPairing => {
+                self.pairing_requests.remove(&device_id);
+                self.notified_pair_ids.remove(&device_id);
+                let island_task = if self.helper_mode {
+                    self.apply_feed(None)
+                } else {
+                    self.refresh_island()
+                };
+                let Some(backend) = self.backend.clone() else {
+                    return island_task;
+                };
+                log::info!("Island: accepting pairing for {device_id}");
+                let task = Task::perform(
+                    async move { backend.accept_pairing(&device_id).await },
+                    |result| match result {
+                        Ok(()) => Message::RefreshDevices,
+                        Err(error) => Message::BackendError(format!("Pairing accept: {error}")),
+                    },
+                )
+                .map(cosmic::Action::App);
+                island_task.chain(task)
+            }
+            FeedActionKind::CancelPairing => {
+                self.pairing_requests.remove(&device_id);
+                self.notified_pair_ids.remove(&device_id);
+                let island_task = if self.helper_mode {
+                    self.apply_feed(None)
+                } else {
+                    self.refresh_island()
+                };
+                let Some(backend) = self.backend.clone() else {
+                    return island_task;
+                };
+                log::info!("Island: declining pairing for {device_id}");
+                let task = Task::perform(
+                    async move { backend.cancel_pairing(&device_id).await },
+                    |result| match result {
+                        Ok(()) => Message::RefreshDevices,
+                        Err(error) => Message::BackendError(format!("Pairing cancel: {error}")),
+                    },
+                )
+                .map(cosmic::Action::App);
+                island_task.chain(task)
+            }
+        }
+    }
+
     fn sync_island(&mut self) -> Task<Action<Message>> {
-        if self.island.is_none() {
-            if self.live_activity().is_some() {
-                return self.spawn_island(false);
+        if self.helper_mode {
+            return self.sync_helper_surface();
+        }
+        if self.panel_hosted {
+            return self.sync_panel_helper();
+        }
+        self.sync_standalone_surface()
+    }
+
+    fn sync_panel_helper(&mut self) -> Task<Action<Message>> {
+        self.reap_island_helper();
+        if self.feed_activity.is_none() {
+            if self.island_helper.is_some() {
+                self.push_feed_to_helper(None);
+                let idle_since = *self.helper_idle_since.get_or_insert_with(Instant::now);
+                if idle_since.elapsed() >= HELPER_IDLE_GRACE {
+                    log::info!("Island helper: idle grace elapsed, stopping");
+                    self.stop_island_helper();
+                    self.last_feed_line = None;
+                }
             }
             return Task::none();
         }
 
-        let target = self.island_target_zone();
-        if target == IslandZone::Hidden {
+        self.helper_idle_since = None;
+        if self.island_helper.is_none() {
+            self.spawn_island_helper();
+        }
+        let activity = self.feed_activity.clone();
+        self.push_feed_to_helper(activity.as_ref());
+        Task::none()
+    }
+
+    fn sync_helper_surface(&mut self) -> Task<Action<Message>> {
+        if self.feed_activity.is_none() {
+            if self.island.is_some() {
+                self.helper_hidden_at.get_or_insert_with(Instant::now);
+            }
             return self.destroy_island();
         }
-
+        self.helper_hidden_at = None;
+        if self.island.is_none() {
+            return self.spawn_island();
+        }
+        let target = self.island_target_zone();
         if target != self.island_zone {
             let Some(id) = self.island else {
                 return Task::none();
@@ -2081,36 +2439,158 @@ impl CosmicConnect {
             log::debug!("Island: input zone -> {target:?}");
             return island_set_zone(id, target);
         }
-
         Task::none()
+    }
+
+    fn sync_standalone_surface(&mut self) -> Task<Action<Message>> {
+        if self.feed_activity.is_none() {
+            self.island_expanded = false;
+            return self.destroy_island();
+        }
+        if self.island.is_none() {
+            return self.spawn_island();
+        }
+        let target = self.island_target_zone();
+        if target != self.island_zone {
+            let Some(id) = self.island else {
+                return Task::none();
+            };
+            self.island_zone = target;
+            log::debug!("Island: input zone -> {target:?}");
+            return island_set_zone(id, target);
+        }
+        Task::none()
+    }
+
+    fn push_feed_to_helper(&mut self, activity: Option<&FeedActivity>) {
+        let line = crate::island::encode(activity);
+        if self.last_feed_line.as_deref() == Some(line.as_str()) {
+            return;
+        }
+        let result = match self
+            .island_helper
+            .as_mut()
+            .and_then(|child| child.stdin.as_mut())
+        {
+            Some(stdin) => {
+                use std::io::Write;
+                stdin
+                    .write_all(format!("{line}\n").as_bytes())
+                    .and_then(|_| stdin.flush())
+            }
+            None => return,
+        };
+        match result {
+            Ok(()) => {
+                log::debug!("Island feed: {line}");
+                self.last_feed_line = Some(line);
+            }
+            Err(error) => {
+                log::warn!("Island feed write failed: {error}");
+                self.island_helper = None;
+                self.last_feed_line = None;
+            }
+        }
     }
 
     fn destroy_island(&mut self) -> Task<Action<Message>> {
         let Some(id) = self.island.take() else {
+            self.island_zone = IslandZone::Hidden;
             return Task::none();
         };
-        self.island_pinned = false;
         self.island_expanded = false;
         self.island_zone = IslandZone::Hidden;
         log::info!("Island: destroying layer surface {id:?}");
         surface::surface_task(surface::action::destroy_layer_shell(id))
     }
 
-    fn toggle_island(&mut self) -> Task<Action<Message>> {
-        if self.island.is_some() {
-            return self.destroy_island();
-        }
-
-        self.spawn_island(true)
+    fn island_open(&self) -> bool {
+        self.island.is_some() || self.island_helper.is_some()
     }
 
-    fn spawn_island(&mut self, pinned: bool) -> Task<Action<Message>> {
+    fn reap_island_helper(&mut self) {
+        let Some(child) = self.island_helper.as_mut() else {
+            return;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                log::info!("Island helper: exited ({status})");
+                self.island_helper = None;
+                self.last_feed_line = None;
+                self.helper_idle_since = None;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!("Island helper: wait failed: {error}");
+                self.island_helper = None;
+                self.last_feed_line = None;
+                self.helper_idle_since = None;
+            }
+        }
+    }
+
+    fn stop_island_helper(&mut self) {
+        let Some(mut child) = self.island_helper.take() else {
+            return;
+        };
+        log::info!("Island helper: stopping PID {}", child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        self.last_feed_line = None;
+        self.helper_idle_since = None;
+    }
+
+    fn spawn_island_helper(&mut self) {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(error) => {
+                log::warn!("Island helper: cannot resolve executable: {error}");
+                self.error = Some(format!("Floating island: {error}"));
+                return;
+            }
+        };
+
+        let mut command = std::process::Command::new(exe);
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .env_remove("WAYLAND_SOCKET")
+            .env("COSMIC_CONNECT_HELPER", "1")
+            .env("COSMIC_CONNECT_LOG_SUFFIX", "helper");
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("COSMIC_PANEL_") {
+                command.env_remove(key);
+            }
+        }
+        if let Some(device_id) = self.selected_device_id.as_deref() {
+            command.env("COSMIC_CONNECT_DEVICE_ID", device_id);
+        }
+
+        match command.spawn() {
+            Ok(child) => {
+                log::info!("Island helper: spawned PID {}", child.id());
+                self.island_helper = Some(child);
+                self.last_feed_line = None;
+                self.helper_idle_since = None;
+            }
+            Err(error) => {
+                log::warn!("Island helper: spawn failed: {error}");
+                self.error = Some(format!("Floating island: {error}"));
+            }
+        }
+    }
+
+    fn spawn_island(&mut self) -> Task<Action<Message>> {
         let id = Id::unique();
+        let initial_zone = if self.island_expanded {
+            IslandZone::Expanded
+        } else {
+            IslandZone::Peek
+        };
         self.island = Some(id);
-        self.island_pinned = pinned;
-        self.island_expanded = false;
-        self.island_zone = IslandZone::Peek;
-        log::info!("Island: spawning layer surface {id:?} (pinned={pinned})");
+        self.island_zone = initial_zone;
+        log::info!("Island: spawning layer surface {id:?} zone={initial_zone:?}");
 
         surface::surface_task(surface::action::app_layer_shell(
             |_app: &CosmicConnect| surface::action::LiveSettings {
@@ -2118,19 +2598,28 @@ impl CosmicConnect {
                 blur: Some(false),
                 ..Default::default()
             },
-            move |_app: &mut CosmicConnect| island_settings(id, IslandZone::Peek),
+            move |_app: &mut CosmicConnect| island_settings(id, initial_zone),
             Some(Box::new(|app: &CosmicConnect| app.render_island())),
         ))
     }
 
     fn toggle_island_expand(&mut self) -> Task<Action<Message>> {
+        let Some(activity) = self.feed_activity.as_ref() else {
+            return Task::none();
+        };
+        if activity.kind == FeedKind::Pairing {
+            if !self.island_expanded {
+                self.island_expanded = true;
+                if let Some(id) = self.island {
+                    self.island_zone = IslandZone::Expanded;
+                    return island_set_zone(id, IslandZone::Expanded);
+                }
+            }
+            return Task::none();
+        }
         let Some(id) = self.island else {
             return Task::none();
         };
-        if self.live_activity().is_none() && !self.island_pinned {
-            return Task::none();
-        }
-
         self.island_expanded = !self.island_expanded;
         let zone = if self.island_expanded {
             IslandZone::Expanded
@@ -2144,7 +2633,6 @@ impl CosmicConnect {
         );
         island_set_zone(id, zone)
     }
-
     fn render_island(&self) -> Element<'_, Action<Message>> {
         if self.island_zone == IslandZone::Hidden {
             return container(row![])
@@ -2153,180 +2641,57 @@ impl CosmicConnect {
                 .into();
         }
 
-        let activity = self.live_activity();
-        let device = self.selected_device();
+        let Some(activity) = self.feed_activity.as_ref() else {
+            return container(row![])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        };
 
-        let mut accent = Color::from_rgb(0.62, 0.68, 0.82);
-        let mut badge = "IDLE".to_string();
-        let mut title = device
-            .map(|device| device.name.clone())
-            .unwrap_or_else(|| "Cosmic Connect".to_string());
-        let mut subtitle = device
-            .map(|device| {
-                if device.is_reachable {
-                    "Connected".to_string()
-                } else {
-                    "Offline".to_string()
-                }
-            })
-            .unwrap_or_default();
-        let mut detail: Option<String> = None;
-        let mut art: Option<&str> = None;
-        let mut art_icon = device
-            .map(|device| device.device_type.icon_name())
-            .unwrap_or("phone-symbolic");
-        let mut progress: Option<f32> = None;
-        let mut progress_text: Option<String> = None;
-        let mut primary_action: Option<Element<'_, Action<Message>>> = None;
-        let mut actions: Vec<Element<'_, Action<Message>>> = Vec::new();
-        let device_id = device.map(|device| device.id.clone()).unwrap_or_default();
-
-        if let Some(activity) = &activity {
-            accent = activity.accent();
-            badge = activity.badge();
-
-            match activity {
-                IslandActivity::Alert(notif) => {
-                    title = if notif.title.trim().is_empty() {
-                        notif.app_name.clone()
-                    } else {
-                        notif.title.clone()
-                    };
-                    subtitle = if notif.app_name.trim().is_empty() {
-                        "Notification".to_string()
-                    } else {
-                        notif.app_name.clone()
-                    };
-                    detail = if !notif.text.trim().is_empty() {
-                        Some(notif.text.clone())
-                    } else if !notif.ticker.trim().is_empty()
-                        && notif.ticker.trim() != notif.title.trim()
-                    {
-                        Some(notif.ticker.clone())
-                    } else {
-                        None
-                    };
-                    if !notif.icon_path.trim().is_empty() {
-                        art = Some(notif.icon_path.as_str());
-                    }
-                    art_icon = "dialog-information-symbolic";
-
-                    primary_action = Some(island_text_button(
-                        "Dismiss",
-                        Message::DismissNotification(
-                            device_id.clone(),
-                            notif.internal_id.clone(),
-                        ),
-                        accent,
-                    ));
-                    actions.push(island_text_button(
-                        "Dismiss",
-                        Message::DismissNotification(
-                            device_id.clone(),
-                            notif.internal_id.clone(),
-                        ),
-                        accent,
-                    ));
-                }
-                IslandActivity::Media {
-                    player,
-                    art: media_art,
-                } => {
-                    title = player.title.clone();
-                    subtitle = if player.artist.trim().is_empty() {
-                        player.album.clone()
-                    } else {
-                        player.artist.clone()
-                    };
-                    detail = match (player.artist.trim(), player.album.trim()) {
-                        ("", "") => None,
-                        ("", album) => Some(album.to_string()),
-                        (artist, "") => Some(artist.to_string()),
-                        (artist, album) => Some(format!("{artist} · {album}")),
-                    };
-                    art = *media_art;
-                    art_icon = "audio-x-generic-symbolic";
-
-                    let length = player.length.max(0);
-                    if length > 0 {
-                        let position = player.position.clamp(0, length);
-                        progress = Some((position as f32 / length as f32).clamp(0.0, 1.0));
-                        progress_text =
-                            Some(format!("{} / {}", format_ms(position), format_ms(length)));
-                    }
-
-                    primary_action = Some(island_icon_button(
-                        if player.is_playing {
-                            "media-playback-pause-symbolic"
-                        } else {
-                            "media-playback-start-symbolic"
-                        },
-                        Message::MediaAction(device_id.clone(), "PlayPause".into()),
-                        accent,
-                    ));
-                    actions.push(island_icon_button(
-                        "media-skip-backward-symbolic",
-                        Message::MediaAction(device_id.clone(), "Previous".into()),
-                        accent,
-                    ));
-                    actions.push(island_icon_button(
-                        if player.is_playing {
-                            "media-playback-pause-symbolic"
-                        } else {
-                            "media-playback-start-symbolic"
-                        },
-                        Message::MediaAction(device_id.clone(), "PlayPause".into()),
-                        accent,
-                    ));
-                    actions.push(island_icon_button(
-                        "media-skip-forward-symbolic",
-                        Message::MediaAction(device_id.clone(), "Next".into()),
-                        accent,
-                    ));
-                }
-                IslandActivity::Transfer(file) => {
-                    title = file.file_name.clone();
-                    subtitle = "Incoming file".to_string();
-                    let transferred =
-                        file.total_bytes.saturating_mul(file.progress as u64) / 100;
-                    detail = Some(if file.total_bytes > 0 {
-                        format!(
-                            "{}% · {} of {}",
-                            file.progress,
-                            format_bytes(transferred),
-                            format_bytes(file.total_bytes)
-                        )
-                    } else {
-                        format!("{}%", file.progress)
-                    });
-                    art_icon = "document-save-symbolic";
-                    progress = Some((file.progress as f32 / 100.0).clamp(0.0, 1.0));
-                    progress_text = Some(format!("{}%", file.progress));
-                }
-            }
-        }
+        let accent = Color::from_rgb(activity.accent[0], activity.accent[1], activity.accent[2]);
+        let primary_action = activity
+            .primary
+            .as_ref()
+            .map(|action| island_feed_action(action, accent));
+        let actions = activity
+            .actions
+            .iter()
+            .map(|action| island_feed_action(action, accent))
+            .collect::<Vec<_>>();
 
         let card = IslandCard {
             accent,
-            badge,
-            title,
-            subtitle,
-            detail,
-            art,
-            art_icon,
-            progress,
-            progress_text,
+            badge: activity.badge.clone(),
+            title: activity.title.clone(),
+            subtitle: activity.subtitle.clone(),
+            detail: activity.detail.clone(),
+            art: activity.art.as_deref(),
+            art_icon: if activity.icon.trim().is_empty() {
+                "phone-symbolic"
+            } else {
+                activity.icon.as_str()
+            },
+            progress: activity.progress,
+            progress_text: activity.progress_text.clone(),
+            compact: activity.compact.clone(),
             primary_action,
             actions,
+            lock_expanded: activity.kind == FeedKind::Pairing,
         };
 
-        if self.island_expanded {
+        let capsule = if self.island_expanded {
             self.render_island_expanded(card)
         } else {
             self.render_island_peek(card)
-        }
-    }
+        };
 
+        container(capsule)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Start)
+            .into()
+    }
     fn render_island_peek<'a>(&self, card: IslandCard<'a>) -> Element<'a, Action<Message>> {
         let IslandCard {
             accent,
@@ -2334,6 +2699,7 @@ impl CosmicConnect {
             subtitle,
             art,
             art_icon,
+            compact,
             primary_action,
             ..
         } = card;
@@ -2361,7 +2727,31 @@ impl CosmicConnect {
         let expandable =
             cosmic::widget::mouse_area(body).on_press(Action::App(Message::IslandToggleExpand));
 
-        let content: Element<'_, Action<Message>> = match primary_action {
+        let trailing: Option<Element<'_, Action<Message>>> = compact
+            .map(|label| {
+                container(
+                    text::text(label)
+                        .size(10.0)
+                        .line_height(LineHeight::Absolute(12.0.into()))
+                        .class(theme::Text::Color(accent)),
+                )
+                .padding([3, 7])
+                .style(move |_theme: &cosmic::Theme| iced_container::Style {
+                    background: Some(Background::Color(Color::from_rgba(
+                        accent.r, accent.g, accent.b, 0.14,
+                    ))),
+                    border: Border {
+                        radius: 9.0.into(),
+                        width: 1.0,
+                        color: Color::from_rgba(accent.r, accent.g, accent.b, 0.30),
+                    },
+                    ..Default::default()
+                })
+                .into()
+            })
+            .or(primary_action);
+
+        let content: Element<'_, Action<Message>> = match trailing {
             Some(action) => row![expandable, action]
                 .spacing(8)
                 .align_y(Alignment::Center)
@@ -2391,6 +2781,7 @@ impl CosmicConnect {
             progress,
             progress_text,
             actions,
+            lock_expanded,
             ..
         } = card;
 
@@ -2428,7 +2819,11 @@ impl CosmicConnect {
             ..Default::default()
         });
 
-        let collapse = island_icon_button("pan-up-symbolic", Message::IslandToggleExpand, accent);
+        let collapse: Element<'_, Action<Message>> = if lock_expanded {
+            container(row![]).width(Length::Fixed(0.0)).into()
+        } else {
+            island_icon_button("pan-up-symbolic", Message::IslandToggleExpand, accent)
+        };
 
         let header = row![
             art,
@@ -2501,9 +2896,16 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
-        let mut app = Self {
+        let helper_mode = std::env::var_os("COSMIC_CONNECT_HELPER").is_some();
+        let panel_hosted = !helper_mode && std::env::var_os("COSMIC_PANEL_NAME").is_some();
+        let initial_device = std::env::var("COSMIC_CONNECT_DEVICE_ID").ok();
+
+        let app = Self {
             core,
             compact_panel: load_compact_panel(),
+            helper_mode,
+            panel_hosted,
+            selected_device_id: initial_device,
             ..Default::default()
         };
 
@@ -2521,13 +2923,7 @@ impl cosmic::Application for CosmicConnect {
         )
         .map(cosmic::Action::App);
 
-        let island_task = if std::env::var_os("COSMIC_CONNECT_ISLAND_SPIKE").is_some() {
-            app.spawn_island(true)
-        } else {
-            Task::none()
-        };
-
-        (app, Task::batch([backend_task, island_task]))
+        (app, backend_task)
     }
 
     fn on_close_requested(&self, id: cosmic::iced::window::Id) -> Option<Message> {
@@ -2604,6 +3000,14 @@ impl cosmic::Application for CosmicConnect {
                     self.popup = None;
                 }
             }
+            Message::HelperWindowOpened(window_id) => {
+                if self.core.main_window_id() != Some(window_id) {
+                    return Task::none();
+                }
+                log::info!("Island helper: closing auxiliary window {window_id:?}");
+                let _ = self.core.set_main_window_id(None);
+                return cosmic::iced::window::close(window_id).map(cosmic::Action::App);
+            }
             Message::BackendReady(backend) => {
                 log::info!("Backend ready");
                 self.backend = Some(backend);
@@ -2661,6 +3065,7 @@ impl cosmic::Application for CosmicConnect {
                     }
                 }
                 self.devices = merged;
+                self.pairing_requests = pairing_ids.iter().cloned().collect();
                 self.last_sync = Some(std::time::Instant::now());
                 if let Some(pending) = &self.pending_unpair {
                     if !self
@@ -2749,20 +3154,6 @@ impl cosmic::Application for CosmicConnect {
                             .map(cosmic::Action::App),
                         );
                     }
-                    if selected && device.has_plugin("kdeconnect_mprisremote") {
-                        let Some(backend) = self.backend.clone() else {
-                            continue;
-                        };
-                        let did = device.id.clone();
-                        let did2 = did.clone();
-                        tasks = tasks.chain(
-                            Task::perform(
-                                async move { backend.player_info(&did).await },
-                                move |p| Message::PlayerInfoUpdated(did2, p),
-                            )
-                            .map(cosmic::Action::App),
-                        );
-                    }
                     if selected && device.has_plugin("kdeconnect_connectivity_report") {
                         let Some(backend) = self.backend.clone() else {
                             continue;
@@ -2811,7 +3202,8 @@ impl cosmic::Application for CosmicConnect {
 
                 self.notified_pair_ids.retain(|id| pairing_ids.contains(id));
 
-                return tasks;
+                let island_task = self.refresh_island();
+                return tasks.chain(island_task);
             }
             Message::DiscoverDevices => {
                 log::info!("DiscoverDevices: starting discovery");
@@ -3017,6 +3409,124 @@ impl cosmic::Application for CosmicConnect {
                 )
                 .map(cosmic::Action::App);
             }
+            Message::PhoneNotificationChanged(device_id, public_id) => {
+                let Some(backend) = self.backend.clone() else {
+                    return Task::none();
+                };
+                let did = device_id.clone();
+                let pid = public_id.clone();
+                return Task::perform(
+                    async move { backend.fetch_notification(&did, &pid).await },
+                    move |notif| Message::PhoneNotificationFetched(device_id, public_id, notif),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::PhoneNotificationFetched(device_id, public_id, notif) => {
+                let key = phone_toast_key(&device_id, &public_id);
+                let Some(backend) = self.backend.clone() else {
+                    return Task::none();
+                };
+                let Some(notif) = notif else {
+                    log::debug!("Phone notification {public_id} vanished before it could be fetched");
+                    return Task::none();
+                };
+
+                if notif.silent {
+                    if let Some(id) = self.phone_toasts.remove(&key) {
+                        return Task::perform(
+                            async move {
+                                let _ = backend.close_notification(id).await;
+                            },
+                            |_| Message::NoOp,
+                        )
+                        .map(cosmic::Action::App);
+                    }
+                    return Task::none();
+                }
+
+                let replaces = self.phone_toasts.get(&key).copied().unwrap_or(0);
+                let summary = if notif.app_name.trim().is_empty() {
+                    "Phone".to_string()
+                } else {
+                    truncate_text(notif.app_name.trim(), 64)
+                };
+                let body = match (notif.title.trim(), notif.text.trim()) {
+                    ("", "") => truncate_text(notif.ticker.trim(), 220),
+                    ("", text) => truncate_text(text, 220),
+                    (title, "") => truncate_text(title, 220),
+                    (title, text) => truncate_text(&format!("{title}: {text}"), 220),
+                };
+                let body = if body.is_empty() {
+                    "New notification".to_string()
+                } else {
+                    body
+                };
+                let icon = if notif.has_icon && !notif.icon_path.is_empty() {
+                    notif.icon_path.clone()
+                } else {
+                    "io.github.acemythos.Connect-symbolic".to_string()
+                };
+
+                log::info!(
+                    "Phone notification from '{summary}' on {device_id} (replaces {replaces})"
+                );
+                let toast_key = key.clone();
+                return Task::perform(
+                    async move {
+                        backend
+                            .notify_with_icon(&summary, &body, replaces, &[], &icon)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| Message::PhoneToastShown(toast_key, result),
+                )
+                .map(cosmic::Action::App);
+            }
+            Message::PhoneToastShown(key, result) => match result {
+                Ok(id) => {
+                    self.phone_toasts.insert(key, id);
+                }
+                Err(error) => log::warn!("Failed to show phone notification toast: {error}"),
+            },
+            Message::PhoneNotificationRemoved(device_id, public_id) => {
+                let key = phone_toast_key(&device_id, &public_id);
+                if let Some(id) = self.phone_toasts.remove(&key) {
+                    if let Some(backend) = self.backend.clone() {
+                        return Task::perform(
+                            async move {
+                                let _ = backend.close_notification(id).await;
+                            },
+                            |_| Message::NoOp,
+                        )
+                        .map(cosmic::Action::App);
+                    }
+                }
+            }
+            Message::PhoneNotificationsCleared(device_id) => {
+                let prefix = format!("{device_id}\u{0}");
+                let mut ids = Vec::new();
+                self.phone_toasts.retain(|key, id| {
+                    if key.starts_with(&prefix) {
+                        ids.push(*id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if !ids.is_empty() {
+                    if let Some(backend) = self.backend.clone() {
+                        return Task::perform(
+                            async move {
+                                for id in ids {
+                                    let _ = backend.close_notification(id).await;
+                                }
+                            },
+                            |_| Message::NoOp,
+                        )
+                        .map(cosmic::Action::App);
+                    }
+                }
+            }
             Message::NotificationsLoaded(device_id, notifications) => {
                 let draft = self.draft_mut(&device_id);
                 if let Some(selected) = draft.selected_notification.as_deref() {
@@ -3029,7 +3539,7 @@ impl cosmic::Application for CosmicConnect {
                     }
                 }
                 draft.notifications = notifications;
-                return self.sync_island();
+                return self.refresh_island();
             }
             Message::SelectNotification(device_id, internal_id) => {
                 let draft = self.draft_mut(&device_id);
@@ -3109,6 +3619,9 @@ impl cosmic::Application for CosmicConnect {
                 .map(cosmic::Action::App);
             }
             Message::PlayerInfoUpdated(device_id, player) => {
+                self.player_refresh_inflight = false;
+                let now = Instant::now();
+                let is_playing = player.as_ref().is_some_and(|player| player.is_playing);
                 let draft = self.draft_mut(&device_id);
                 let reset_preview = match (&draft.player, &player) {
                     (_, None) => true,
@@ -3123,7 +3636,11 @@ impl cosmic::Application for CosmicConnect {
                     draft.seek_preview = None;
                 }
                 draft.player = player;
-                return self.sync_island();
+                draft.player_updated_at = Some(now);
+                if is_playing {
+                    draft.player_last_active = Some(now);
+                }
+                return self.refresh_island();
             }
             Message::ConnectivityUpdated(device_id, connectivity) => {
                 self.draft_mut(&device_id).connectivity = connectivity;
@@ -3194,26 +3711,27 @@ impl cosmic::Application for CosmicConnect {
                     total_bytes,
                 };
                 self.received_files.entry(device_id).or_default().push(rf);
-                return self.sync_island();
+                self.transfer_failures.remove(&transfer_id);
+                return self.refresh_island();
             }
             Message::TransferProgress(device_id, transfer_id, _transferred, _total, percent) => {
                 let nkey = format!("transfer:{transfer_id}");
-                let files = self.received_files.get_mut(&device_id);
-                if let Some(files) = files {
+                if let Some(files) = self.received_files.get_mut(&device_id) {
                     if let Some(rf) = files.iter_mut().find(|f| f.transfer_id == transfer_id) {
                         rf.progress = percent.clamp(0, 100) as u32;
                     }
                 }
+                let island_task = self.refresh_island();
                 let prev = self.last_notif_pct.get(&nkey).copied().unwrap_or(-5);
                 let pct_block = (percent / 5) * 5;
                 if pct_block <= prev {
-                    return Task::none();
+                    return island_task;
                 }
                 self.last_notif_pct.insert(nkey.clone(), pct_block);
                 log::debug!("TransferProgress: {transfer_id} at {percent}%");
                 if let Some(&notif_id) = self.active_notifs.get(&nkey) {
                     let Some(backend) = self.backend.clone() else {
-                        return Task::none();
+                        return island_task;
                     };
                     let nk = nkey.clone();
                     return Task::perform(
@@ -3236,13 +3754,14 @@ impl cosmic::Application for CosmicConnect {
                             }
                         },
                     )
-                    .map(cosmic::Action::App);
+                    .map(cosmic::Action::App)
+                    .chain(island_task);
                 } else if self.pending_notif_requests.contains(&nkey) {
-                    return Task::none();
+                    return island_task;
                 } else {
                     self.pending_notif_requests.insert(nkey.clone());
                     let Some(backend) = self.backend.clone() else {
-                        return Task::none();
+                        return island_task;
                     };
                     let nk = nkey.clone();
                     return Task::perform(
@@ -3260,7 +3779,8 @@ impl cosmic::Application for CosmicConnect {
                             }
                         },
                     )
-                    .map(cosmic::Action::App);
+                    .map(cosmic::Action::App)
+                    .chain(island_task);
                 }
             }
             Message::TransferFinished(device_id, transfer_id, file_path) => {
@@ -3309,6 +3829,8 @@ impl cosmic::Application for CosmicConnect {
                     files.remove(0);
                 }
 
+                self.transfer_failures.remove(&transfer_id);
+                let island_task = self.refresh_island();
                 let notif_id = self.active_notifs.remove(&nkey).unwrap_or(0);
                 self.pending_notif_requests.remove(&nkey);
                 self.last_notif_pct.remove(&nkey);
@@ -3316,38 +3838,59 @@ impl cosmic::Application for CosmicConnect {
                 if notif_id == 0 {
                     self.deferred_notifs
                         .insert(nkey, (device_name, notif_name, dest_path));
-                } else {
-                    let backend = self.backend.clone();
-                    return Task::perform(
-                        async move {
-                            let Some(backend) = backend else { return };
-                            let _ = backend
-                                .notify(
-                                    &format!("File received from {device_name}"),
-                                    &format!("{notif_name} → {dest_path}"),
-                                    notif_id,
-                                    &[],
-                                )
-                                .await;
-                        },
-                        |_| Message::NoOp,
-                    )
-                    .map(cosmic::Action::App);
+                    return island_task;
                 }
+                let backend = self.backend.clone();
+                return Task::perform(
+                    async move {
+                        let Some(backend) = backend else { return };
+                        let _ = backend
+                            .notify(
+                                &format!("File received from {device_name}"),
+                                &format!("{notif_name} → {dest_path}"),
+                                notif_id,
+                                &[],
+                            )
+                            .await;
+                    },
+                    |_| Message::NoOp,
+                )
+                .map(cosmic::Action::App)
+                .chain(island_task);
             }
             Message::TransferFailed(device_id, transfer_id, _error_code, error_string) => {
                 let nkey = format!("transfer:{transfer_id}");
                 log::warn!("Transfer {transfer_id} failed: {error_string}");
+                let file_name = self
+                    .received_files
+                    .get(&device_id)
+                    .and_then(|files| {
+                        files
+                            .iter()
+                            .find(|file| file.transfer_id == transfer_id)
+                            .map(|file| file.file_name.clone())
+                    })
+                    .unwrap_or_else(|| "File".to_string());
                 if let Some(files) = self.received_files.get_mut(&device_id) {
                     if let Some(rf) = files.iter_mut().find(|f| f.transfer_id == transfer_id) {
                         rf.active = false;
                     }
                 }
+                self.transfer_failures.insert(
+                    transfer_id.clone(),
+                    TransferFailure {
+                        file_name,
+                        device_id: device_id.clone(),
+                        error: error_string.clone(),
+                        at: Instant::now(),
+                    },
+                );
+                let island_task = self.refresh_island();
                 let notif_id = self.active_notifs.remove(&nkey).unwrap_or(0);
                 self.pending_notif_requests.remove(&nkey);
                 self.last_notif_pct.remove(&nkey);
                 let Some(backend) = self.backend.clone() else {
-                    return Task::none();
+                    return island_task;
                 };
                 return Task::perform(
                     async move {
@@ -3357,7 +3900,8 @@ impl cosmic::Application for CosmicConnect {
                     },
                     |_| Message::NoOp,
                 )
-                .map(cosmic::Action::App);
+                .map(cosmic::Action::App)
+                .chain(island_task);
             }
             Message::FileReceived(device_id, file_path) => {
                 log::info!("FileReceived: {file_path} from {device_id}");
@@ -3392,6 +3936,7 @@ impl cosmic::Application for CosmicConnect {
                 if files.len() > MAX_RECEIVED_HISTORY {
                     files.remove(0);
                 }
+                return self.refresh_island();
             }
             Message::PingReceived(device_id) => {
                 log::info!("PingReceived from {device_id}");
@@ -3485,6 +4030,8 @@ impl cosmic::Application for CosmicConnect {
                 if let Some(device_id) = self.pairing_notifs.remove(&notif_id) {
                     log::info!("Pairing action '{action_key}' for {device_id}");
                     self.notified_pair_ids.remove(&device_id);
+                    self.pairing_requests.remove(&device_id);
+                    let island_task = self.refresh_island();
                     if let Some(backend) = self.backend.clone() {
                         return Task::perform(
                             async move {
@@ -3499,8 +4046,10 @@ impl cosmic::Application for CosmicConnect {
                             },
                             |_| Message::RefreshDevices,
                         )
-                        .map(cosmic::Action::App);
+                        .map(cosmic::Action::App)
+                        .chain(island_task);
                     }
+                    return island_task;
                 }
             }
             Message::NoOp => {}
@@ -3514,14 +4063,72 @@ impl cosmic::Application for CosmicConnect {
             Message::ToggleDeviceList => {
                 self.device_list_open = !self.device_list_open;
             }
-            Message::ToggleIsland => {
-                return self.toggle_island();
-            }
             Message::IslandReconcile => {
-                return self.sync_island();
+                return self.refresh_island();
             }
             Message::IslandToggleExpand => {
                 return self.toggle_island_expand();
+            }
+            Message::IslandFeedAction(action) => {
+                return self.handle_feed_action(action);
+            }
+            Message::HelperFeedPoll => {
+                if !self.helper_mode {
+                    return Task::none();
+                }
+                let Some((seq, activity)) =
+                    crate::island::latest_if_newer(self.helper_feed_seq)
+                else {
+                    return Task::none();
+                };
+                self.helper_feed_seq = seq;
+                return self.apply_feed(activity);
+            }
+            Message::HelperExitCheck => {
+                if !self.helper_mode {
+                    return Task::none();
+                }
+                if self.feed_activity.is_some() {
+                    self.helper_hidden_at = None;
+                    return Task::none();
+                }
+                let hidden_at = *self
+                    .helper_hidden_at
+                    .get_or_insert_with(Instant::now);
+                if hidden_at.elapsed() >= HELPER_HIDDEN_EXIT {
+                    log::info!("Island helper: idle for too long, exiting");
+                    std::process::exit(0);
+                }
+                return Task::none();
+            }
+            Message::PlayerTick => {
+                if self.helper_mode {
+                    return Task::none();
+                }
+                if self.player_refresh_inflight {
+                    return self.refresh_island();
+                }
+                let Some(device_id) = self.selected_device_id.clone() else {
+                    return self.refresh_island();
+                };
+                let Some(backend) = self.backend.clone() else {
+                    return self.refresh_island();
+                };
+                self.player_refresh_inflight = true;
+                let did = device_id.clone();
+                return Task::perform(
+                    async move {
+                        tokio::time::timeout(
+                            Duration::from_millis(1500),
+                            backend.player_info(&did),
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                    },
+                    move |player| Message::PlayerInfoUpdated(device_id, player),
+                )
+                .map(cosmic::Action::App);
             }
             Message::SetCompactPanel(enabled) => {
                 self.compact_panel = enabled;
@@ -3625,6 +4232,13 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        if self.helper_mode {
+            return container(row![])
+                .width(Length::Fixed(1.0))
+                .height(Length::Fixed(1.0))
+                .into();
+        }
+
         let suggested = self.core.applet.suggested_size(false);
         let reachable = self
             .selected_device()
@@ -3807,30 +4421,40 @@ impl cosmic::Application for CosmicConnect {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let inner = Subscription::run_with(std::any::TypeId::of::<()>(), |_state| {
-            let poll = unfold(PollState::new(), |mut state| async {
-                tokio::time::sleep(POLL_INTERVAL).await;
-                let msg = match state.poll().await {
-                    Ok((devices, pairing)) => Message::DevicesUpdated(devices, pairing),
-                    Err(e) => Message::BackendError(e),
-                };
-                Some((msg, state))
+        let mut subscriptions = Vec::new();
+
+        if !self.helper_mode {
+            let inner = Subscription::run_with(std::any::TypeId::of::<()>(), |_state| {
+                let poll = unfold(PollState::new(), |mut state| async {
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                    let msg = match state.poll().await {
+                        Ok((devices, pairing)) => Message::DevicesUpdated(devices, pairing),
+                        Err(e) => Message::BackendError(e),
+                    };
+                    Some((msg, state))
+                });
+
+                let signals = unfold(ShareSignalState::new(), |mut state| async {
+                    let msg = state.next().await;
+                    Some((msg, state))
+                });
+
+                let notif_actions = unfold(NotificationActionState::new(), |mut state| async {
+                    let msg = state.next().await;
+                    Some((msg, state))
+                });
+
+                futures_util::stream::select(
+                    futures_util::stream::select(poll, signals),
+                    notif_actions,
+                )
             });
 
-            let signals = unfold(ShareSignalState::new(), |mut state| async {
-                let msg = state.next().await;
-                Some((msg, state))
-            });
-
-            let notif_actions = unfold(NotificationActionState::new(), |mut state| async {
-                let msg = state.next().await;
-                Some((msg, state))
-            });
-
-            futures_util::stream::select(futures_util::stream::select(poll, signals), notif_actions)
-        });
-
-        let mut subscriptions = vec![inner];
+            subscriptions.push(inner);
+            subscriptions.push(
+                time::every(PLAYER_REFRESH_INTERVAL).map(|_| Message::PlayerTick),
+            );
+        }
 
         if self.popup.is_some() {
             subscriptions.push(time::every(Duration::from_millis(500)).map(|_| Message::Tick));
@@ -3840,7 +4464,19 @@ impl cosmic::Application for CosmicConnect {
             subscriptions.push(time::every(Duration::from_millis(600)).map(|_| Message::BoltBlink));
         }
 
-        if self.island.is_some() {
+        if self.helper_mode {
+            subscriptions.push(
+                time::every(HELPER_FEED_INTERVAL).map(|_| Message::HelperFeedPoll),
+            );
+            subscriptions.push(
+                time::every(Duration::from_millis(500)).map(|_| Message::HelperExitCheck),
+            );
+            subscriptions.push(
+                cosmic::iced::window::open_events().map(Message::HelperWindowOpened),
+            );
+        }
+
+        if self.island_open() {
             subscriptions.push(
                 time::every(ISLAND_RECONCILE_INTERVAL).map(|_| Message::IslandReconcile),
             );
@@ -3917,7 +4553,7 @@ fn island_settings(id: Id, zone: IslandZone) -> SctkLayerSurfaceSettings {
         output: IcedOutput::Active,
         namespace: "cosmic-connect-island".to_string(),
         margin: IcedMargin {
-            top: 56,
+            top: 0,
             right: 0,
             bottom: 0,
             left: 0,
@@ -3943,22 +4579,21 @@ fn island_set_zone(id: Id, zone: IslandZone) -> Task<Action<Message>> {
     )
 }
 
-fn island_media_mirror(notif: &Notification, player: &PlayerInfo) -> bool {
-    let title = player.title.trim();
-    if title.is_empty() {
-        return false;
+fn island_feed_action<'a>(
+    action: &'a FeedAction,
+    accent: Color,
+) -> Element<'a, Action<Message>> {
+    let message = Message::IslandFeedAction(action.action.clone());
+    if action.as_text {
+        island_text_button(&action.label, message, accent)
+    } else {
+        let icon_name = if action.icon.trim().is_empty() {
+            "media-playback-start-symbolic"
+        } else {
+            action.icon.as_str()
+        };
+        island_icon_button(icon_name, message, accent)
     }
-
-    if notif.title.trim().eq_ignore_ascii_case(title) {
-        return true;
-    }
-
-    let ticker = notif.ticker.trim();
-    ticker.eq_ignore_ascii_case(title)
-        || ticker
-            .split(':')
-            .next()
-            .is_some_and(|head| head.trim().eq_ignore_ascii_case(title))
 }
 
 fn island_art<'a>(
@@ -4299,6 +4934,19 @@ impl ShareSignalState {
                             if let Ok(content) = msg.body().deserialize::<String>() {
                                 return Message::ClipboardReceived(device_id, content);
                             }
+                        }
+                        ("notifications", "notificationPosted" | "notificationUpdated") => {
+                            if let Ok(public_id) = msg.body().deserialize::<String>() {
+                                return Message::PhoneNotificationChanged(device_id, public_id);
+                            }
+                        }
+                        ("notifications", "notificationRemoved") => {
+                            if let Ok(public_id) = msg.body().deserialize::<String>() {
+                                return Message::PhoneNotificationRemoved(device_id, public_id);
+                            }
+                        }
+                        ("notifications", "allNotificationsRemoved") => {
+                            return Message::PhoneNotificationsCleared(device_id);
                         }
                         _ => {}
                     }

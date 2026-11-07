@@ -1040,6 +1040,7 @@ dependencies = [
  "libcosmic",
  "log",
  "serde",
+ "serde_json",
  "tokio",
  "zbus",
  "zvariant",

@@ -14,9 +14,13 @@ fn log_file() -> Option<PathBuf> {
     let dir = base.join("cosmic-connect");
     std::fs::create_dir_all(&dir).ok()?;
 
-    let path = dir.join("cosmic-connect.log");
+    let name = match std::env::var("COSMIC_CONNECT_LOG_SUFFIX") {
+        Ok(suffix) if !suffix.is_empty() => format!("cosmic-connect-{suffix}.log"),
+        _ => "cosmic-connect.log".to_string(),
+    };
+    let path = dir.join(&name);
     if std::fs::metadata(&path).map(|m| m.len() > LOG_MAX_BYTES).unwrap_or(false) {
-        let _ = std::fs::rename(&path, dir.join("cosmic-connect.log.1"));
+        let _ = std::fs::rename(&path, dir.join(format!("{name}.1")));
     }
 
     Some(path)
@@ -37,6 +41,10 @@ fn main() -> cosmic::iced::Result {
     }
 
     builder.init();
+
+    if std::env::var_os("COSMIC_CONNECT_HELPER").is_some() {
+        cosmic_connect::island::watch_stdin();
+    }
 
     cosmic::applet::run::<CosmicConnect>(())?;
 
