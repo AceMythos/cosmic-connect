@@ -7,6 +7,7 @@ use ashpd::desktop::file_chooser::SelectedFiles;
 use cosmic::app::Core;
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::cosmic_config::{Config as CosmicConfig, ConfigGet, ConfigSet};
+use cosmic::iced::animation::{Animation, Easing};
 use cosmic::iced::core::text::LineHeight;
 use cosmic::iced::core::Alignment;
 use cosmic::iced::gradient;
@@ -18,6 +19,7 @@ use cosmic::iced::runtime::platform_specific::wayland::layer_surface::Action as 
 use cosmic::iced::runtime::platform_specific::wayland::Action as WaylandAction;
 use cosmic::iced::runtime::platform_specific::Action as PlatformAction;
 use cosmic::iced::time;
+use cosmic::iced::widget::Stack;
 use cosmic::iced::window::Id;
 use cosmic::iced::{
     Background, Border, Color, Gradient, Length, Limits, Rectangle, Shadow, Subscription, Vector,
@@ -59,12 +61,19 @@ const COMPACT_PANEL_KEY: &str = "compact_panel";
 const FLOATING_ISLAND_KEY: &str = "floating_island";
 const PANEL_BOLT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M10 1 2 9.5h4.5L6 15l8-8.5H9.5L10 1Z" fill="white"/></svg>"#;
 
-const ISLAND_CANVAS_WIDTH: u32 = 460;
-const ISLAND_CANVAS_HEIGHT: u32 = 180;
-const ISLAND_PEEK_WIDTH: f32 = 280.0;
-const ISLAND_PEEK_HEIGHT: f32 = 40.0;
-const ISLAND_EXPANDED_WIDTH: f32 = 420.0;
-const ISLAND_EXPANDED_HEIGHT: f32 = 148.0;
+const ISLAND_CANVAS_WIDTH: u32 = 520;
+const ISLAND_CANVAS_HEIGHT: u32 = 208;
+const ISLAND_TOP_OFFSET: f32 = 12.0;
+const ISLAND_PEEK_WIDTH: f32 = 304.0;
+const ISLAND_PEEK_HEIGHT: f32 = 46.0;
+const ISLAND_PEEK_RADIUS: f32 = 23.0;
+const ISLAND_EXPANDED_WIDTH: f32 = 428.0;
+const ISLAND_EXPANDED_HEIGHT: f32 = 158.0;
+const ISLAND_EXPANDED_RADIUS: f32 = 30.0;
+const ISLAND_MORPH_DURATION: Duration = Duration::from_millis(420);
+const ISLAND_HOVER_EXPAND_DELAY: Duration = Duration::from_millis(420);
+const ISLAND_HOVER_COLLAPSE_DELAY: Duration = Duration::from_millis(1400);
+const ISLAND_EQ_INTERVAL: Duration = Duration::from_millis(90);
 const ISLAND_RECONCILE_INTERVAL: Duration = Duration::from_millis(250);
 const HELPER_FEED_INTERVAL: Duration = Duration::from_millis(200);
 const PLAYER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -116,6 +125,7 @@ struct IslandNotification {
 }
 
 struct IslandCard<'a> {
+    kind: FeedKind,
     accent: Color,
     badge: String,
     title: String,
@@ -126,7 +136,6 @@ struct IslandCard<'a> {
     progress: Option<f32>,
     progress_text: Option<String>,
     compact: Option<String>,
-    primary_action: Option<Element<'a, Action<Message>>>,
     actions: Vec<Element<'a, Action<Message>>>,
     lock_expanded: bool,
 }
@@ -182,6 +191,12 @@ pub struct CosmicConnect {
     island_notification_queue: VecDeque<FeedActivity>,
     island: Option<Id>,
     island_expanded: bool,
+    island_pinned: bool,
+    island_hovered: bool,
+    island_hover_at: Option<Instant>,
+    island_unhover_at: Option<Instant>,
+    island_morph: Option<Animation<f32>>,
+    island_eq_phase: f32,
     island_zone: IslandZone,
     island_helper: Option<std::process::Child>,
     feed_activity: Option<FeedActivity>,
@@ -239,6 +254,12 @@ pub enum Message {
     ToggleDeviceList,
     IslandReconcile,
     IslandToggleExpand,
+    IslandCollapse,
+    IslandHoverEnter,
+    IslandHoverExit,
+    IslandCursorLeft(Id),
+    IslandFrame,
+    IslandEqTick,
     IslandFeedAction(FeedActionKind),
     HelperFeedPoll,
     HelperExitCheck,
@@ -2497,6 +2518,134 @@ impl CosmicConnect {
         }
     }
 
+    fn set_island_expanded(&mut self, expanded: bool, pinned: bool) -> Task<Action<Message>> {
+        let pairing = self
+            .feed_activity
+            .as_ref()
+            .is_some_and(|activity| activity.kind == FeedKind::Pairing);
+        if !expanded && pairing {
+            return Task::none();
+        }
+
+        if self.island_expanded == expanded {
+            if !expanded {
+                self.island_pinned = false;
+            } else if pinned {
+                self.island_pinned = true;
+            }
+            return Task::none();
+        }
+
+        self.island_expanded = expanded;
+        self.island_pinned = pinned;
+        self.island_hover_at = None;
+        self.island_unhover_at = None;
+
+        if expanded {
+            self.extend_island_notification_hold();
+        }
+
+        let target = if expanded { 1.0 } else { 0.0 };
+        let now = Instant::now();
+
+        if self.island.is_none() {
+            self.island_morph = Some(island_morph_animation(target));
+            return Task::none();
+        }
+
+        match self.island_morph.as_mut() {
+            Some(morph) => morph.go_mut(target, now),
+            None => self.island_morph = Some(island_morph_animation(target)),
+        }
+
+        let zone = if expanded {
+            IslandZone::Expanded
+        } else {
+            IslandZone::Peek
+        };
+        self.island_zone = zone;
+        log::debug!(
+            "Island: expanded={} input zone -> {zone:?}",
+            self.island_expanded
+        );
+        match self.island {
+            Some(id) => island_set_zone(id, zone),
+            None => Task::none(),
+        }
+    }
+
+    fn extend_island_notification_hold(&mut self) {
+        if let Some(notification) = self
+            .island_notification
+            .as_mut()
+            .filter(|notification| notification.activity.kind == FeedKind::Notification)
+        {
+            notification.expires_at = Instant::now() + ISLAND_NOTIFICATION_HOLD;
+        }
+    }
+
+    fn tick_island_hover(&mut self) -> Task<Action<Message>> {
+        if self.island.is_none() {
+            return Task::none();
+        }
+
+        let pairing = self
+            .feed_activity
+            .as_ref()
+            .is_some_and(|activity| activity.kind == FeedKind::Pairing);
+
+        if !self.island_expanded {
+            if !self.island_hovered || pairing {
+                return Task::none();
+            }
+            let started = *self.island_hover_at.get_or_insert_with(Instant::now);
+            if started.elapsed() >= ISLAND_HOVER_EXPAND_DELAY {
+                return self.set_island_expanded(true, false);
+            }
+            return Task::none();
+        }
+
+        if self.island_pinned || self.island_hovered || pairing {
+            return Task::none();
+        }
+
+        let started = *self.island_unhover_at.get_or_insert_with(Instant::now);
+        if started.elapsed() >= ISLAND_HOVER_COLLAPSE_DELAY {
+            return self.set_island_expanded(false, false);
+        }
+
+        Task::none()
+    }
+
+    fn island_hover_enter(&mut self) {
+        if self.island.is_none() {
+            return;
+        }
+        self.island_hovered = true;
+        self.island_unhover_at = None;
+        if !self.island_expanded {
+            self.island_hover_at = Some(Instant::now());
+        }
+    }
+
+    fn island_hover_exit(&mut self) {
+        self.island_hovered = false;
+        self.island_hover_at = None;
+        if self.island_expanded && !self.island_pinned {
+            self.island_unhover_at = Some(Instant::now());
+        }
+    }
+
+    fn reset_island_motion(&mut self) {
+        self.island_expanded = false;
+        self.island_pinned = false;
+        self.island_hovered = false;
+        self.island_hover_at = None;
+        self.island_unhover_at = None;
+        self.island_morph = None;
+        self.island_eq_phase = 0.0;
+    }
+
     fn refresh_island(&mut self) -> Task<Action<Message>> {
         if self.helper_mode {
             return Task::none();
@@ -2514,20 +2663,42 @@ impl CosmicConnect {
         let key_changed = activity.as_ref().map(|a| a.key.as_str()) != self.feed_key.as_deref();
         if key_changed {
             self.feed_key = activity.as_ref().map(|activity| activity.key.clone());
-            self.island_expanded = activity.as_ref().is_some_and(|activity| activity.expand);
+            self.island_hover_at = None;
+            self.island_unhover_at = None;
         }
         self.feed_activity = activity;
-        self.sync_island()
+        let expand = key_changed
+            && self
+                .feed_activity
+                .as_ref()
+                .is_some_and(|activity| activity.expand);
+        let motion = if key_changed {
+            self.set_island_expanded(expand, false)
+        } else {
+            Task::none()
+        };
+        motion.chain(self.sync_island())
     }
 
     fn apply_feed(&mut self, activity: Option<FeedActivity>) -> Task<Action<Message>> {
         let key_changed = activity.as_ref().map(|a| a.key.as_str()) != self.feed_key.as_deref();
         if key_changed {
             self.feed_key = activity.as_ref().map(|activity| activity.key.clone());
-            self.island_expanded = activity.as_ref().is_some_and(|activity| activity.expand);
+            self.island_hover_at = None;
+            self.island_unhover_at = None;
         }
         self.feed_activity = activity;
-        self.sync_island()
+        let expand = key_changed
+            && self
+                .feed_activity
+                .as_ref()
+                .is_some_and(|activity| activity.expand);
+        let motion = if key_changed {
+            self.set_island_expanded(expand, false)
+        } else {
+            Task::none()
+        };
+        motion.chain(self.sync_island())
     }
 
     fn handle_feed_action(&mut self, action: FeedActionKind) -> Task<Action<Message>> {
@@ -2726,9 +2897,10 @@ impl CosmicConnect {
     fn destroy_island(&mut self) -> Task<Action<Message>> {
         let Some(id) = self.island.take() else {
             self.island_zone = IslandZone::Hidden;
+            self.reset_island_motion();
             return Task::none();
         };
-        self.island_expanded = false;
+        self.reset_island_motion();
         self.island_zone = IslandZone::Hidden;
         log::info!("Island: destroying layer surface {id:?}");
         surface::surface_task(surface::action::destroy_layer_shell(id))
@@ -2820,6 +2992,11 @@ impl CosmicConnect {
         };
         self.island = Some(id);
         self.island_zone = initial_zone;
+        self.island_morph = Some(island_morph_animation(if self.island_expanded {
+            1.0
+        } else {
+            0.0
+        }));
         log::info!("Island: spawning layer surface {id:?} zone={initial_zone:?}");
 
         surface::surface_task(surface::action::app_layer_shell(
@@ -2834,44 +3011,49 @@ impl CosmicConnect {
     }
 
     fn toggle_island_expand(&mut self) -> Task<Action<Message>> {
-        let Some(activity) = self.feed_activity.as_ref() else {
-            return Task::none();
-        };
-        if activity.kind == FeedKind::Pairing {
-            if !self.island_expanded {
-                self.island_expanded = true;
-                if let Some(id) = self.island {
-                    self.island_zone = IslandZone::Expanded;
-                    return island_set_zone(id, IslandZone::Expanded);
-                }
-            }
+        if self.feed_activity.is_none() {
             return Task::none();
         }
-        let Some(id) = self.island else {
-            return Task::none();
-        };
-        self.island_expanded = !self.island_expanded;
         if self.island_expanded {
-            if let Some(notification) = self
-                .island_notification
-                .as_mut()
-                .filter(|notification| notification.activity.kind == FeedKind::Notification)
-            {
-                notification.expires_at = Instant::now() + ISLAND_NOTIFICATION_HOLD;
-            }
+            self.island_pinned = true;
+            self.island_unhover_at = None;
+            return Task::none();
         }
-        let zone = if self.island_expanded {
-            IslandZone::Expanded
-        } else {
-            IslandZone::Peek
-        };
-        self.island_zone = zone;
-        log::debug!(
-            "Island: expanded={} input zone -> {zone:?}",
-            self.island_expanded
-        );
-        island_set_zone(id, zone)
+        self.set_island_expanded(true, true)
     }
+
+    fn collapse_island(&mut self) -> Task<Action<Message>> {
+        self.island_hovered = false;
+        self.island_hover_at = None;
+        self.island_unhover_at = None;
+        self.set_island_expanded(false, false)
+    }
+
+    fn island_morph_at(&self, now: Instant) -> f32 {
+        self.island_morph
+            .as_ref()
+            .map(|morph| morph.interpolate_with(|value| value, now))
+            .unwrap_or(if self.island_expanded { 1.0 } else { 0.0 })
+    }
+
+    fn island_morph_animating(&self, now: Instant) -> bool {
+        self.island.is_some()
+            && self
+                .island_morph
+                .as_ref()
+                .is_some_and(|morph| morph.is_animating(now))
+    }
+
+    fn island_media_playing(&self) -> bool {
+        self.feed_activity.as_ref().is_some_and(|activity| {
+            activity.kind == FeedKind::Media && activity.badge.eq_ignore_ascii_case("PLAYING")
+        })
+    }
+
+    fn island_eq_active(&self) -> bool {
+        self.island.is_some() && !self.island_expanded && self.island_media_playing()
+    }
+
     fn render_island(&self) -> Element<'_, Action<Message>> {
         if self.island_zone == IslandZone::Hidden {
             return container(row![])
@@ -2888,10 +3070,6 @@ impl CosmicConnect {
         };
 
         let accent = Color::from_rgb(activity.accent[0], activity.accent[1], activity.accent[2]);
-        let primary_action = activity
-            .primary
-            .as_ref()
-            .map(|action| island_feed_action(action, accent));
         let actions = activity
             .actions
             .iter()
@@ -2899,6 +3077,7 @@ impl CosmicConnect {
             .collect::<Vec<_>>();
 
         let card = IslandCard {
+            kind: activity.kind,
             accent,
             badge: activity.badge.clone(),
             title: activity.title.clone(),
@@ -2913,47 +3092,75 @@ impl CosmicConnect {
             progress: activity.progress,
             progress_text: activity.progress_text.clone(),
             compact: activity.compact.clone(),
-            primary_action,
             actions,
             lock_expanded: activity.kind == FeedKind::Pairing,
         };
 
-        let capsule = if self.island_expanded {
+        let now = Instant::now();
+        let morph = self.island_morph_at(now);
+        let show_expanded = morph >= 0.5;
+        let width = lerp(ISLAND_PEEK_WIDTH, ISLAND_EXPANDED_WIDTH, morph);
+        let height = lerp(ISLAND_PEEK_HEIGHT, ISLAND_EXPANDED_HEIGHT, morph);
+        let radius = lerp(ISLAND_PEEK_RADIUS, ISLAND_EXPANDED_RADIUS, morph);
+
+        let content: Element<'_, Action<Message>> = if show_expanded {
             self.render_island_expanded(card)
         } else {
             self.render_island_peek(card)
         };
 
+        let capsule = container(content)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(height))
+            .padding(if show_expanded {
+                [13.0, 16.0]
+            } else {
+                [6.0, 11.0]
+            })
+            .clip(true)
+            .style(island_capsule_style(accent, radius));
+
+        let capsule = cosmic::widget::mouse_area(capsule)
+            .on_enter(Action::App(Message::IslandHoverEnter))
+            .on_exit(Action::App(Message::IslandHoverExit));
+
+        let capsule = if show_expanded {
+            capsule
+        } else {
+            capsule.on_press(Action::App(Message::IslandToggleExpand))
+        };
+
         container(capsule)
             .width(Length::Fill)
             .height(Length::Fill)
+            .padding([ISLAND_TOP_OFFSET, 0.0])
             .align_x(Alignment::Center)
             .align_y(Alignment::Start)
             .into()
     }
     fn render_island_peek<'a>(&self, card: IslandCard<'a>) -> Element<'a, Action<Message>> {
         let IslandCard {
+            kind,
             accent,
             title,
             subtitle,
             art,
             art_icon,
+            progress,
             compact,
-            primary_action,
             ..
         } = card;
 
-        let art =
-            island_art(art, 26.0, 8.0).unwrap_or_else(|| island_icon_chip(art_icon, accent, 26.0));
+        let art = island_art_or_ring(kind, art, art_icon, progress, accent, 32.0, 9.0);
 
         let labels = column![
             text::text(truncate_text(title.trim(), 26))
-                .size(12.5)
+                .size(13.0)
                 .line_height(LineHeight::Absolute(15.0.into()))
                 .class(theme::Text::Color(Color::from_rgb(0.96, 0.97, 0.99))),
             text::text(truncate_text(subtitle.trim(), 30))
-                .size(10.5)
-                .line_height(LineHeight::Absolute(12.5.into()))
+                .size(11.0)
+                .line_height(LineHeight::Absolute(13.0.into()))
                 .class(theme::Text::Color(Color::from_rgb(0.70, 0.74, 0.82))),
         ]
         .spacing(0);
@@ -2963,11 +3170,9 @@ impl CosmicConnect {
             .align_x(Alignment::Start)
             .align_y(Alignment::Center);
 
-        let expandable =
-            cosmic::widget::mouse_area(body).on_press(Action::App(Message::IslandToggleExpand));
-
-        let trailing: Option<Element<'_, Action<Message>>> = compact
-            .map(|label| {
+        let trailing: Option<Element<'_, Action<Message>>> = match kind {
+            FeedKind::Media => Some(island_eq(self.island_eq_phase, accent)),
+            _ => compact.map(|label| {
                 container(
                     text::text(label)
                         .size(10.0)
@@ -2987,29 +3192,28 @@ impl CosmicConnect {
                     ..Default::default()
                 })
                 .into()
-            })
-            .or(primary_action);
+            }),
+        };
 
         let content: Element<'_, Action<Message>> = match trailing {
-            Some(action) => row![expandable, action]
+            Some(action) => row![body, action]
                 .spacing(8)
                 .align_y(Alignment::Center)
                 .into(),
-            None => row![expandable].into(),
+            None => row![body].into(),
         };
 
         container(content)
-            .width(ISLAND_PEEK_WIDTH)
-            .height(ISLAND_PEEK_HEIGHT)
-            .padding([5, 10])
+            .width(Length::Fill)
+            .height(Length::Fill)
             .align_x(Alignment::Start)
             .align_y(Alignment::Center)
-            .style(island_capsule_style(accent, 20.0))
             .into()
     }
 
     fn render_island_expanded<'a>(&self, card: IslandCard<'a>) -> Element<'a, Action<Message>> {
         let IslandCard {
+            kind,
             accent,
             badge,
             title,
@@ -3024,20 +3228,26 @@ impl CosmicConnect {
             ..
         } = card;
 
-        let art =
-            island_art(art, 34.0, 10.0).unwrap_or_else(|| island_icon_chip(art_icon, accent, 34.0));
+        let art = island_art_or_ring(kind, art, art_icon, progress, accent, 38.0, 11.0);
 
         let heading = column![
             text::text(truncate_text(title.trim(), 40))
-                .size(14.0)
+                .size(14.5)
                 .line_height(LineHeight::Absolute(17.0.into()))
                 .class(theme::Text::Color(Color::from_rgb(0.97, 0.98, 1.0))),
             text::text(truncate_text(subtitle.trim(), 52))
-                .size(11.0)
-                .line_height(LineHeight::Absolute(13.0.into()))
+                .size(11.5)
+                .line_height(LineHeight::Absolute(14.0.into()))
                 .class(theme::Text::Color(Color::from_rgb(0.70, 0.74, 0.82))),
         ]
         .spacing(1);
+
+        let heading = cosmic::widget::mouse_area(
+            container(heading)
+                .width(Length::Fill)
+                .align_x(Alignment::Start),
+        )
+        .on_press(Action::App(Message::IslandToggleExpand));
 
         let badge = container(
             text::text(badge)
@@ -3061,10 +3271,10 @@ impl CosmicConnect {
         let collapse: Element<'_, Action<Message>> = if lock_expanded {
             container(row![]).width(Length::Fixed(0.0)).into()
         } else {
-            island_icon_button("pan-up-symbolic", Message::IslandToggleExpand, accent)
+            island_icon_button("pan-up-symbolic", Message::IslandCollapse, accent)
         };
 
-        let header = row![art, container(heading).width(Length::Fill), badge, collapse,]
+        let header = row![art, heading, badge, collapse,]
             .spacing(9)
             .align_y(Alignment::Center);
 
@@ -3101,16 +3311,15 @@ impl CosmicConnect {
             for action in actions {
                 action_row = action_row.push(action);
             }
+            body = body.push(container(row![]).height(Length::Fill));
             body = body.push(action_row);
         }
 
         container(body)
-            .width(ISLAND_EXPANDED_WIDTH)
-            .height(ISLAND_EXPANDED_HEIGHT)
-            .padding([12, 14])
+            .width(Length::Fill)
+            .height(Length::Fill)
             .align_x(Alignment::Start)
             .align_y(Alignment::Start)
-            .style(island_capsule_style(accent, 28.0))
             .into()
     }
 }
@@ -4365,10 +4574,28 @@ impl cosmic::Application for CosmicConnect {
                 self.device_list_open = !self.device_list_open;
             }
             Message::IslandReconcile => {
-                return self.refresh_island();
+                return self.refresh_island().chain(self.tick_island_hover());
             }
             Message::IslandToggleExpand => {
                 return self.toggle_island_expand();
+            }
+            Message::IslandCollapse => {
+                return self.collapse_island();
+            }
+            Message::IslandHoverEnter => {
+                self.island_hover_enter();
+            }
+            Message::IslandHoverExit => {
+                self.island_hover_exit();
+            }
+            Message::IslandCursorLeft(id) => {
+                if Some(id) == self.island {
+                    self.island_hover_exit();
+                }
+            }
+            Message::IslandFrame => {}
+            Message::IslandEqTick => {
+                self.island_eq_phase = (self.island_eq_phase + 0.16) % 1.0;
             }
             Message::IslandFeedAction(action) => {
                 return self.handle_feed_action(action);
@@ -4804,6 +5031,26 @@ impl cosmic::Application for CosmicConnect {
                 .push(time::every(ISLAND_RECONCILE_INTERVAL).map(|_| Message::IslandReconcile));
         }
 
+        if self.island.is_some() {
+            subscriptions.push(cosmic::iced::event::listen_with(
+                |event, _status, window| {
+                    matches!(
+                        event,
+                        cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::CursorLeft)
+                    )
+                    .then_some(Message::IslandCursorLeft(window))
+                },
+            ));
+        }
+
+        if self.island_morph_animating(Instant::now()) {
+            subscriptions.push(cosmic::iced::window::frames().map(|_| Message::IslandFrame));
+        }
+
+        if self.island_eq_active() {
+            subscriptions.push(time::every(ISLAND_EQ_INTERVAL).map(|_| Message::IslandEqTick));
+        }
+
         Subscription::batch(subscriptions)
     }
 }
@@ -4850,13 +5097,13 @@ fn island_input_region(zone: IslandZone) -> Option<Vec<Rectangle>> {
         IslandZone::Hidden => Vec::new(),
         IslandZone::Peek => vec![Rectangle {
             x: (ISLAND_CANVAS_WIDTH as f32 - ISLAND_PEEK_WIDTH) / 2.0,
-            y: 0.0,
+            y: ISLAND_TOP_OFFSET,
             width: ISLAND_PEEK_WIDTH,
             height: ISLAND_PEEK_HEIGHT,
         }],
         IslandZone::Expanded => vec![Rectangle {
             x: (ISLAND_CANVAS_WIDTH as f32 - ISLAND_EXPANDED_WIDTH) / 2.0,
-            y: 0.0,
+            y: ISLAND_TOP_OFFSET,
             width: ISLAND_EXPANDED_WIDTH,
             height: ISLAND_EXPANDED_HEIGHT,
         }],
@@ -4933,6 +5180,83 @@ fn island_art<'a>(
     )
 }
 
+fn island_art_or_ring<'a>(
+    kind: FeedKind,
+    art: Option<&'a str>,
+    art_icon: &'a str,
+    progress: Option<f32>,
+    accent: Color,
+    size: f32,
+    radius: f32,
+) -> Element<'a, Action<Message>> {
+    let base =
+        island_art(art, size, radius).unwrap_or_else(|| island_icon_chip(art_icon, accent, size));
+
+    if kind != FeedKind::Transfer {
+        return base;
+    }
+    let Some(progress) = progress else {
+        return base;
+    };
+
+    let ring = container(
+        progress_bar::determinate_circular(progress.clamp(0.0, 1.0))
+            .size(size)
+            .bar_height(3.0),
+    )
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center);
+
+    Stack::with_children([base, ring.into()]).into()
+}
+
+fn island_eq<'a>(phase: f32, accent: Color) -> Element<'a, Action<Message>> {
+    let mut bars = row![].spacing(2).align_y(Alignment::Center);
+
+    for (index, scale) in [0.62_f32, 1.0, 0.78].into_iter().enumerate() {
+        let wave = ((phase + index as f32 * 0.24) * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+        let height = (4.0 + wave * 10.0) * scale + 3.0;
+        bars = bars.push(
+            container(row![])
+                .width(Length::Fixed(3.0))
+                .height(Length::Fixed(height))
+                .style(move |_theme: &cosmic::Theme| iced_container::Style {
+                    background: Some(Background::Color(accent)),
+                    border: Border {
+                        radius: 2.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        );
+    }
+
+    container(bars)
+        .height(Length::Fixed(16.0))
+        .align_y(Alignment::Center)
+        .into()
+}
+
+fn lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t
+}
+
+fn island_morph_animation(target: f32) -> Animation<f32> {
+    Animation::new(target)
+        .duration(ISLAND_MORPH_DURATION)
+        .easing(Easing::EaseOutBack)
+}
+
+fn mix_color(from: Color, to: Color, t: f32) -> Color {
+    Color::from_rgb(
+        from.r + (to.r - from.r) * t,
+        from.g + (to.g - from.g) * t,
+        from.b + (to.b - from.b) * t,
+    )
+}
+
 fn island_icon_chip<'a>(
     icon_name: &'a str,
     accent: Color,
@@ -4962,25 +5286,29 @@ fn island_capsule_style(
     accent: Color,
     radius: f32,
 ) -> impl Fn(&cosmic::Theme) -> iced_container::Style {
-    move |_theme: &cosmic::Theme| iced_container::Style {
-        background: Some(Background::Gradient(Gradient::Linear(
-            gradient::Linear::new(std::f32::consts::PI)
-                .add_stop(0.0, Color::from_rgba(0.105, 0.115, 0.145, 0.97))
-                .add_stop(1.0, Color::from_rgba(0.035, 0.040, 0.055, 0.985)),
-        ))),
-        border: Border {
-            radius: radius.into(),
-            width: 1.0,
-            color: Color::from_rgba(accent.r, accent.g, accent.b, 0.30),
-        },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.55),
-            offset: Vector::new(0.0, 12.0),
-            blur_radius: 32.0,
-        },
-        text_color: Some(Color::from_rgb(0.96, 0.97, 0.99)),
-        icon_color: Some(Color::from_rgb(0.96, 0.97, 0.99)),
-        ..Default::default()
+    move |_theme: &cosmic::Theme| {
+        let top = mix_color(Color::from_rgb(0.105, 0.115, 0.145), accent, 0.10);
+        let bottom = mix_color(Color::from_rgb(0.035, 0.040, 0.055), accent, 0.05);
+        iced_container::Style {
+            background: Some(Background::Gradient(Gradient::Linear(
+                gradient::Linear::new(std::f32::consts::PI)
+                    .add_stop(0.0, Color::from_rgba(top.r, top.g, top.b, 0.97))
+                    .add_stop(1.0, Color::from_rgba(bottom.r, bottom.g, bottom.b, 0.985)),
+            ))),
+            border: Border {
+                radius: radius.into(),
+                width: 1.0,
+                color: Color::from_rgba(accent.r, accent.g, accent.b, 0.30),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+                offset: Vector::new(0.0, 12.0),
+                blur_radius: 32.0,
+            },
+            text_color: Some(Color::from_rgb(0.96, 0.97, 0.99)),
+            icon_color: Some(Color::from_rgb(0.96, 0.97, 0.99)),
+            ..Default::default()
+        }
     }
 }
 
