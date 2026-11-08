@@ -207,6 +207,7 @@ pub struct CosmicConnect {
     island_seek_preview: Option<i64>,
     island_seek_dragging: bool,
     island_seek_preview_at: Option<Instant>,
+    island_hidden_key: Option<String>,
     island_zone: IslandZone,
     island_helper: Option<std::process::Child>,
     feed_activity: Option<FeedActivity>,
@@ -265,6 +266,7 @@ pub enum Message {
     IslandReconcile,
     IslandToggleExpand,
     IslandCollapse,
+    IslandDismiss,
     IslandHoverEnter,
     IslandHoverExit,
     IslandCursorLeft(Id),
@@ -623,6 +625,18 @@ fn phone_toast_key(device_id: &str, public_id: &str) -> String {
 
 fn island_notification_key(device_id: &str, public_id: &str) -> String {
     format!("notification:{device_id}:{public_id}")
+}
+
+/// Identity used to keep a locally dismissed feed off the island. Media keeps a
+/// stable feed key so a track change does not collapse an open card, so its
+/// identity also carries the track title: dismissing music hides it until the
+/// next track starts.
+fn island_hide_key(activity: &FeedActivity) -> String {
+    if activity.kind == FeedKind::Media {
+        format!("{}|{}", activity.key, activity.title)
+    } else {
+        activity.key.clone()
+    }
 }
 
 fn battery_plug_label(plugged: i32) -> &'static str {
@@ -2320,6 +2334,11 @@ impl CosmicConnect {
             if self.island_notification_queue.len() >= ISLAND_NOTIFICATION_QUEUE_MAX {
                 self.island_notification_queue.pop_front();
             }
+            // An ongoing card never expires on its own, so once something newer
+            // is waiting give it a bounded hold instead of starving the queue.
+            if current.expires_at.is_none() {
+                current.expires_at = Some(now + ISLAND_NOTIFICATION_HOLD);
+            }
             self.island_notification_queue.push_back(activity);
             return;
         }
@@ -2333,7 +2352,10 @@ impl CosmicConnect {
     }
 
     fn remove_island_notification(&mut self, device_id: &str, public_id: &str) -> bool {
-        let key = island_notification_key(device_id, public_id);
+        self.remove_island_notification_key(&island_notification_key(device_id, public_id))
+    }
+
+    fn remove_island_notification_key(&mut self, key: &str) -> bool {
         let changed = self
             .island_notification
             .as_ref()
@@ -2370,7 +2392,29 @@ impl CosmicConnect {
         self.island_notification_queue.clear();
     }
 
+    /// Highest-priority activity for the island, minus anything dismissed with
+    /// the card's close button. A dismissal lasts until the activity changes.
     fn current_feed(&mut self) -> Option<FeedActivity> {
+        let activity = self.select_feed();
+        self.feed_visible(activity)
+    }
+
+    /// Applies a local dismissal. Both the applet (when it draws the island
+    /// itself) and the helper process (which draws it in panel mode) run this,
+    /// because a click lands in whichever process owns the surface.
+    fn feed_visible(&mut self, activity: Option<FeedActivity>) -> Option<FeedActivity> {
+        let Some(activity) = activity else {
+            self.island_hidden_key = None;
+            return None;
+        };
+        if self.island_hidden_key.as_deref() == Some(island_hide_key(&activity).as_str()) {
+            return None;
+        }
+        self.island_hidden_key = None;
+        Some(activity)
+    }
+
+    fn select_feed(&mut self) -> Option<FeedActivity> {
         self.tick_island_notifications();
         let now = Instant::now();
         self.transfer_failures
@@ -2884,6 +2928,7 @@ impl CosmicConnect {
             self.feed_activity = None;
             self.feed_key = None;
             self.last_feed_line = None;
+            self.island_hidden_key = None;
             self.island_notification = None;
             self.island_notification_queue.clear();
             self.stop_island_helper();
@@ -2912,6 +2957,7 @@ impl CosmicConnect {
     }
 
     fn apply_feed(&mut self, activity: Option<FeedActivity>) -> Task<Action<Message>> {
+        let activity = self.feed_visible(activity);
         let key_changed = activity.as_ref().map(|a| a.key.as_str()) != self.feed_key.as_deref();
         if key_changed {
             self.feed_key = activity.as_ref().map(|activity| activity.key.clone());
@@ -3286,6 +3332,37 @@ impl CosmicConnect {
         self.set_island_expanded(false, false)
     }
 
+    /// Hides the current card without touching the phone. The activity stays
+    /// visible in the popup (Alerts, Files, or Home) and returns to the island
+    /// once its identity changes.
+    fn dismiss_island_feed(&mut self) -> Task<Action<Message>> {
+        let Some(activity) = self.feed_activity.clone() else {
+            return Task::none();
+        };
+        if activity.kind == FeedKind::Pairing {
+            return Task::none();
+        }
+        log::info!("Island: dismissed {} locally", activity.key);
+        let hidden = island_hide_key(&activity);
+
+        if self.helper_mode {
+            // The helper owns the surface here, so it clears its own card and
+            // keeps filtering the same feed until the parent sends a new one.
+            let task = self.apply_feed(None);
+            self.island_hidden_key = Some(hidden);
+            return task;
+        }
+
+        if activity.kind == FeedKind::Notification {
+            // Otherwise an ongoing notification would stay current forever and
+            // never let the queued ones through.
+            self.remove_island_notification_key(&activity.key);
+        }
+        self.island_hidden_key = Some(hidden);
+        self.reset_island_motion();
+        self.refresh_island()
+    }
+
     fn island_morph_at(&self, now: Instant) -> f32 {
         self.island_morph
             .as_ref()
@@ -3610,16 +3687,23 @@ impl CosmicConnect {
             }
         }
 
-        if !actions.is_empty() || (kind == FeedKind::Media && !device_name.is_empty()) {
+        // Pairing is the only card with no close button: Decline and Accept are
+        // its exits, and lock_expanded keeps it open until one is pressed.
+        if kind != FeedKind::Pairing {
             let mut action_row = row![].spacing(6).align_y(Alignment::Center);
             for action in actions {
                 action_row = action_row.push(action);
             }
+            action_row = action_row.push(container(row![]).width(Length::Fill));
             if kind == FeedKind::Media && !device_name.is_empty() {
-                action_row = action_row
-                    .push(container(row![]).width(Length::Fill))
-                    .push(island_device_chip(device_name, accent));
+                action_row = action_row.push(island_device_chip(device_name, accent));
             }
+            action_row = action_row.push(island_icon_button(
+                "window-close-symbolic",
+                Message::IslandDismiss,
+                accent,
+                false,
+            ));
             body = body.push(container(row![]).height(Length::Fill));
             body = body.push(action_row);
         }
@@ -4898,6 +4982,9 @@ impl cosmic::Application for CosmicConnect {
             Message::IslandCollapse => {
                 return self.collapse_island();
             }
+            Message::IslandDismiss => {
+                return self.dismiss_island_feed();
+            }
             Message::IslandHoverEnter => {
                 return self.island_hover_enter();
             }
@@ -5009,7 +5096,7 @@ impl cosmic::Application for CosmicConnect {
                 if !self.helper_mode {
                     return Task::none();
                 }
-                if self.feed_activity.is_some() {
+                if self.feed_activity.is_some() || self.island_hidden_key.is_some() {
                     self.helper_hidden_at = None;
                     return Task::none();
                 }
@@ -6139,10 +6226,10 @@ async fn pick_file_path() -> Result<String, String> {
 mod tests {
     use super::{
         format_bytes, format_ms, is_media_notification, is_quiet_action, is_valid_url,
-        island_notification_feed, parse_device_signal_path, truncate_text, CosmicConnect,
-        DeviceDraft, Message, PlayerInfo, PopupView, ShareKind,
+        island_hide_key, island_notification_feed, parse_device_signal_path, truncate_text,
+        CosmicConnect, DeviceDraft, Message, PlayerInfo, PopupView, ShareKind,
     };
-    use crate::island::{FeedActionKind, FeedKind};
+    use crate::island::{FeedActionKind, FeedActivity, FeedKind};
     use crate::model::{ActionType, Notification};
     use cosmic::Application;
     use std::time::{Duration, Instant};
@@ -6383,6 +6470,112 @@ mod tests {
             actions: Vec::new(),
             ongoing: false,
         }
+    }
+
+    fn feed(kind: FeedKind, key: &str, title: &str) -> FeedActivity {
+        FeedActivity {
+            key: key.to_string(),
+            kind,
+            device_id: "dev".to_string(),
+            title: title.to_string(),
+            subtitle: String::new(),
+            detail: None,
+            art: None,
+            icon: String::new(),
+            badge: String::new(),
+            accent: [0.5, 0.7, 1.0],
+            progress: None,
+            progress_text: None,
+            position_ms: None,
+            length_ms: None,
+            can_seek: false,
+            device_name: String::new(),
+            compact: None,
+            primary: None,
+            actions: Vec::new(),
+            expand: false,
+            expires_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn ongoing_notification_does_not_starve_the_queue() {
+        let mut app = CosmicConnect::default();
+        app.island_enabled = true;
+
+        let mut ongoing = phone_notification("2", "22");
+        ongoing.ongoing = true;
+        let first = island_notification_feed("dev", &ongoing);
+        let second = island_notification_feed("dev", &phone_notification("3", "33"));
+        app.push_island_notification(first.clone());
+        app.push_island_notification(second.clone());
+
+        assert_eq!(
+            app.island_notification
+                .as_ref()
+                .map(|notification| notification.activity.key.clone()),
+            Some(first.key.clone())
+        );
+        assert!(app
+            .island_notification
+            .as_ref()
+            .is_some_and(|notification| notification.expires_at.is_some()));
+
+        app.island_notification.as_mut().unwrap().expires_at =
+            Some(Instant::now() - Duration::from_secs(1));
+        app.tick_island_notifications();
+        assert_eq!(
+            app.island_notification
+                .as_ref()
+                .map(|notification| notification.activity.key.clone()),
+            Some(second.key.clone())
+        );
+    }
+
+    #[test]
+    fn dismissing_media_hides_it_until_the_track_changes() {
+        let mut app = CosmicConnect::default();
+        let track = feed(FeedKind::Media, "media:dev", "Let It Happen");
+
+        app.island_hidden_key = Some(island_hide_key(&track));
+
+        assert!(app.feed_visible(Some(track.clone())).is_none());
+        assert!(app
+            .feed_visible(Some(feed(FeedKind::Media, "media:dev", "Let It Happen")))
+            .is_none());
+
+        let next = app.feed_visible(Some(feed(FeedKind::Media, "media:dev", "Borderline")));
+        assert_eq!(next.map(|feed| feed.title), Some("Borderline".to_string()));
+        assert!(app.island_hidden_key.is_none());
+    }
+
+    #[test]
+    fn dismissing_a_notification_lets_the_queue_advance() {
+        let mut app = CosmicConnect::default();
+        app.island_enabled = true;
+
+        let first = island_notification_feed("dev", &phone_notification("1", "11"));
+        let second = island_notification_feed("dev", &phone_notification("2", "22"));
+        app.push_island_notification(first.clone());
+        app.push_island_notification(second.clone());
+        app.feed_activity = app.current_feed();
+
+        let _ = app.dismiss_island_feed();
+
+        assert_eq!(
+            app.current_feed().map(|feed| feed.key),
+            Some(second.key.clone())
+        );
+    }
+
+    #[test]
+    fn pairing_cannot_be_dismissed_from_the_island() {
+        let mut app = CosmicConnect::default();
+        app.feed_activity = Some(feed(FeedKind::Pairing, "pairing:dev", "Pixel"));
+
+        let _ = app.dismiss_island_feed();
+
+        assert!(app.island_hidden_key.is_none());
     }
 
     #[test]
