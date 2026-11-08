@@ -122,7 +122,7 @@ struct TransferFailure {
 
 struct IslandNotification {
     activity: FeedActivity,
-    expires_at: Instant,
+    expires_at: Option<Instant>,
 }
 
 struct IslandCard<'a> {
@@ -397,6 +397,18 @@ fn notification_initial(notif: &Notification) -> String {
         .to_string()
 }
 
+fn is_android_hotspot_status(notif: &Notification) -> bool {
+    notif.ongoing
+        && notif.app_name.trim().eq_ignore_ascii_case("Android System")
+        && [
+            notif.title.as_str(),
+            notif.text.as_str(),
+            notif.ticker.as_str(),
+        ]
+        .iter()
+        .any(|field| field.to_ascii_lowercase().contains("mobile data hotspot"))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HeroTone {
     Accent,
@@ -583,6 +595,48 @@ fn island_notification_key(device_id: &str, public_id: &str) -> String {
     format!("notification:{device_id}:{public_id}")
 }
 
+fn battery_plug_label(plugged: i32) -> &'static str {
+    match plugged {
+        1 => "AC",
+        2 => "USB",
+        4 => "Wireless",
+        8 => "Dock",
+        _ => "External power",
+    }
+}
+
+fn battery_health_label(health: i32) -> &'static str {
+    match health {
+        2 => "Good",
+        3 => "Overheat",
+        4 => "Dead",
+        5 => "Over-voltage",
+        6 => "Unspecified failure",
+        7 => "Cold",
+        _ => "Unknown health",
+    }
+}
+
+fn battery_telemetry(battery: &crate::model::BatteryInfo) -> Option<String> {
+    let mut details = Vec::new();
+    if let Some(temperature) = battery.temperature {
+        details.push(format!("{temperature:.1} °C"));
+    }
+    if let Some(plugged) = battery.plugged {
+        details.push(battery_plug_label(plugged).to_string());
+    }
+    if let Some(health) = battery.health {
+        details.push(battery_health_label(health).to_string());
+    }
+    if let Some(technology) = battery.technology.as_deref() {
+        details.push(technology.to_string());
+    }
+    if let Some(cycle_count) = battery.cycle_count {
+        details.push(format!("{cycle_count} cycles"));
+    }
+    (!details.is_empty()).then(|| details.join(" · "))
+}
+
 fn island_notification_feed(device_id: &str, notif: &Notification) -> FeedActivity {
     let app = notif.app_name.trim();
     let title = notif.title.trim();
@@ -615,16 +669,29 @@ fn island_notification_feed(device_id: &str, notif: &Notification) -> FeedActivi
     } else {
         None
     };
-    let actions = if notif.dismissable {
-        vec![FeedAction {
+    let mut actions: Vec<FeedAction> = notif
+        .actions
+        .iter()
+        .map(|action| action.trim())
+        .filter(|action| !action.is_empty() && !notif.internal_id.is_empty())
+        .map(|action| FeedAction {
+            label: action.to_string(),
+            icon: String::new(),
+            action: FeedActionKind::NotificationAction {
+                internal_id: notif.internal_id.clone(),
+                action: action.to_string(),
+            },
+            as_text: true,
+        })
+        .collect();
+    if notif.dismissable {
+        actions.push(FeedAction {
             label: "Dismiss".to_string(),
             icon: "window-close-symbolic".to_string(),
             action: FeedActionKind::DismissNotification(notif.internal_id.clone()),
             as_text: true,
-        }]
-    } else {
-        Vec::new()
-    };
+        });
+    }
 
     FeedActivity {
         key: island_notification_key(device_id, &notif.id),
@@ -647,7 +714,8 @@ fn island_notification_feed(device_id: &str, notif: &Notification) -> FeedActivi
         primary: None,
         actions,
         expand: false,
-        expires_at_ms: Some(crate::island::unix_ms() + ISLAND_NOTIFICATION_HOLD.as_millis() as u64),
+        expires_at_ms: (!notif.ongoing)
+            .then_some(crate::island::unix_ms() + ISLAND_NOTIFICATION_HOLD.as_millis() as u64),
     }
 }
 
@@ -1738,6 +1806,18 @@ impl CosmicConnect {
                 .spacing(8)
                 .align_y(Alignment::Center),
             );
+            if let Some(telemetry) = battery_telemetry(battery) {
+                metadata = metadata.push(
+                    row![
+                        icon::from_name("battery-symbolic").size(16),
+                        text::caption("Battery detail").size(SIZE_CAPTION),
+                        container(row![]).width(Length::Fill),
+                        text::body(telemetry).size(SIZE_CAPTION),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
         }
 
         if let Some(network) = draft.connectivity.as_ref() {
@@ -2173,7 +2253,11 @@ impl CosmicConnect {
         if self
             .island_notification
             .as_ref()
-            .is_some_and(|notification| now >= notification.expires_at)
+            .is_some_and(|notification| {
+                notification
+                    .expires_at
+                    .is_some_and(|expires_at| now >= expires_at)
+            })
         {
             self.island_notification = None;
         }
@@ -2181,9 +2265,12 @@ impl CosmicConnect {
             let Some(activity) = self.island_notification_queue.pop_front() else {
                 break;
             };
+            let expires_at = activity
+                .expires_at_ms
+                .map(|_| now + ISLAND_NOTIFICATION_HOLD);
             self.island_notification = Some(IslandNotification {
                 activity,
-                expires_at: now + ISLAND_NOTIFICATION_HOLD,
+                expires_at,
             });
         }
     }
@@ -2192,8 +2279,11 @@ impl CosmicConnect {
         let now = Instant::now();
         if let Some(current) = self.island_notification.as_mut() {
             if current.activity.key == activity.key {
+                let expires_at = activity
+                    .expires_at_ms
+                    .map(|_| now + ISLAND_NOTIFICATION_HOLD);
                 current.activity = activity;
-                current.expires_at = now + ISLAND_NOTIFICATION_HOLD;
+                current.expires_at = expires_at;
                 return;
             }
             if self.island_notification_queue.len() >= ISLAND_NOTIFICATION_QUEUE_MAX {
@@ -2202,9 +2292,12 @@ impl CosmicConnect {
             self.island_notification_queue.push_back(activity);
             return;
         }
+        let expires_at = activity
+            .expires_at_ms
+            .map(|_| now + ISLAND_NOTIFICATION_HOLD);
         self.island_notification = Some(IslandNotification {
             activity,
-            expires_at: now + ISLAND_NOTIFICATION_HOLD,
+            expires_at,
         });
     }
 
@@ -2223,18 +2316,21 @@ impl CosmicConnect {
         changed || self.island_notification_queue.len() != before
     }
 
-    fn clear_island_notifications(&mut self, device_id: &str) -> bool {
+    fn clear_transient_island_notifications(&mut self, device_id: &str) -> bool {
         let prefix = format!("notification:{device_id}:");
         let changed = self
             .island_notification
             .as_ref()
-            .is_some_and(|notification| notification.activity.key.starts_with(&prefix));
+            .is_some_and(|notification| {
+                notification.activity.key.starts_with(&prefix) && notification.expires_at.is_some()
+            });
         if changed {
             self.island_notification = None;
         }
         let before = self.island_notification_queue.len();
-        self.island_notification_queue
-            .retain(|notification| !notification.key.starts_with(&prefix));
+        self.island_notification_queue.retain(|notification| {
+            !notification.key.starts_with(&prefix) || notification.expires_at_ms.is_none()
+        });
         changed || self.island_notification_queue.len() != before
     }
 
@@ -2630,7 +2726,9 @@ impl CosmicConnect {
             .as_mut()
             .filter(|notification| notification.activity.kind == FeedKind::Notification)
         {
-            notification.expires_at = Instant::now() + ISLAND_NOTIFICATION_HOLD;
+            if notification.expires_at.is_some() {
+                notification.expires_at = Some(Instant::now() + ISLAND_NOTIFICATION_HOLD);
+            }
         }
     }
 
@@ -2886,6 +2984,31 @@ impl CosmicConnect {
                 )
                 .map(cosmic::Action::App);
                 island_task.chain(task)
+            }
+            FeedActionKind::NotificationAction {
+                internal_id,
+                action,
+            } => {
+                let Some(backend) = self.backend.clone() else {
+                    return Task::none();
+                };
+                log::info!("Island: sending notification action {action:?} for {internal_id}");
+                let action_device = device_id.clone();
+                let refresh_device = device_id.clone();
+                Task::perform(
+                    async move {
+                        backend
+                            .send_notification_action(&action_device, &internal_id, &action)
+                            .await
+                    },
+                    move |result| match result {
+                        Ok(()) => Message::RefreshNotifications(refresh_device),
+                        Err(error) => {
+                            Message::BackendError(format!("Notification action: {error}"))
+                        }
+                    },
+                )
+                .map(cosmic::Action::App)
             }
         }
     }
@@ -4031,7 +4154,7 @@ impl cosmic::Application for CosmicConnect {
                     return Task::none();
                 };
 
-                if notif.silent {
+                if notif.silent || is_android_hotspot_status(&notif) {
                     let island_changed = self.remove_island_notification(&device_id, &public_id);
                     let mut tasks = if island_changed {
                         self.refresh_island()
@@ -4144,7 +4267,7 @@ impl cosmic::Application for CosmicConnect {
             }
             Message::PhoneNotificationsCleared(device_id) => {
                 let prefix = format!("{device_id}\u{0}");
-                let island_changed = self.clear_island_notifications(&device_id);
+                let island_changed = self.clear_transient_island_notifications(&device_id);
                 let mut tasks = if island_changed {
                     self.refresh_island()
                 } else {
@@ -6220,6 +6343,8 @@ mod tests {
             dismissable: true,
             silent: false,
             reply_id: String::new(),
+            actions: Vec::new(),
+            ongoing: false,
         }
     }
 
@@ -6236,6 +6361,46 @@ mod tests {
         assert_eq!(feed.actions.len(), 1);
         assert!(matches!(
             &feed.actions[0].action,
+            FeedActionKind::DismissNotification(id) if id == "7"
+        ));
+    }
+
+    #[test]
+    fn hotspot_status_notification_is_suppressed_from_the_island() {
+        let mut app = CosmicConnect::default();
+        app.island_enabled = true;
+        let mut hotspot = phone_notification("42", "7");
+        hotspot.app_name = "Android System".to_string();
+        hotspot.title = "1 device is connected to your mobile data hotspot.".to_string();
+        hotspot.text = "Mobile data used: 119 MB".to_string();
+        hotspot.ongoing = true;
+
+        let _ = app.update(Message::PhoneNotificationFetched(
+            "dev".to_string(),
+            hotspot.id.clone(),
+            Some(hotspot),
+        ));
+
+        assert!(app.island_notification.is_none());
+        assert!(app.island_notification_queue.is_empty());
+    }
+
+    #[test]
+    fn island_notification_feed_pins_ongoing_actions() {
+        let mut notification = phone_notification("42", "7");
+        notification.ongoing = true;
+        notification.actions = vec!["Pause".into(), "Cancel".into()];
+        let feed = island_notification_feed("dev", &notification);
+
+        assert_eq!(feed.expires_at_ms, None);
+        assert_eq!(feed.actions.len(), 3);
+        assert!(matches!(
+            &feed.actions[0].action,
+            FeedActionKind::NotificationAction { internal_id, action }
+                if internal_id == "7" && action == "Pause"
+        ));
+        assert!(matches!(
+            &feed.actions[2].action,
             FeedActionKind::DismissNotification(id) if id == "7"
         ));
     }
@@ -6259,13 +6424,40 @@ mod tests {
         assert_eq!(app.island_notification_queue.len(), 1);
 
         app.island_notification.as_mut().unwrap().expires_at =
-            Instant::now() - Duration::from_secs(1);
+            Some(Instant::now() - Duration::from_secs(1));
         app.tick_island_notifications();
         assert_eq!(
             app.island_notification
                 .as_ref()
                 .map(|notification| notification.activity.key.as_str()),
             Some(second.key.as_str())
+        );
+
+        assert!(app.remove_island_notification("dev", "2"));
+        app.tick_island_notifications();
+        assert!(app.island_notification.is_none());
+    }
+
+    #[test]
+    fn bulk_clear_keeps_ongoing_phone_notification_until_removed() {
+        let mut app = CosmicConnect::default();
+        app.island_enabled = true;
+
+        let transient = island_notification_feed("dev", &phone_notification("1", "11"));
+        let mut hotspot = phone_notification("2", "22");
+        hotspot.ongoing = true;
+        let ongoing = island_notification_feed("dev", &hotspot);
+
+        app.push_island_notification(transient);
+        app.push_island_notification(ongoing.clone());
+
+        assert!(app.clear_transient_island_notifications("dev"));
+        app.tick_island_notifications();
+        assert_eq!(
+            app.island_notification
+                .as_ref()
+                .map(|notification| notification.activity.key.as_str()),
+            Some(ongoing.key.as_str())
         );
 
         assert!(app.remove_island_notification("dev", "2"));

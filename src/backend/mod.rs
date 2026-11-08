@@ -171,22 +171,47 @@ impl KdeConnectBackend {
         self.device_proxy(id).await?.call("loadedPlugins", &()).await
     }
 
-    pub async fn battery_charge(&self, id: &str) -> Option<i32> {
-        self.plugin_proxy(id, "battery", "org.kde.kdeconnect.device.battery")
+    pub async fn battery_info(&self, id: &str) -> Option<BatteryInfo> {
+        let proxy = self
+            .plugin_proxy(id, "battery", "org.kde.kdeconnect.device.battery")
             .await
-            .ok()?
-            .get_property("charge")
-            .await
-            .ok()
-    }
+            .ok()?;
+        let charge = proxy.get_property("charge").await.ok()?;
 
-    pub async fn battery_charging(&self, id: &str) -> Option<bool> {
-        self.plugin_proxy(id, "battery", "org.kde.kdeconnect.device.battery")
-            .await
-            .ok()?
-            .get_property("isCharging")
-            .await
-            .ok()
+        Some(BatteryInfo {
+            charge,
+            is_charging: proxy.get_property("isCharging").await.unwrap_or(false),
+            temperature: proxy
+                .get_property::<f64>("temperature")
+                .await
+                .ok()
+                .filter(|value| *value >= 0.0),
+            plugged: proxy
+                .get_property::<i32>("plugged")
+                .await
+                .ok()
+                .filter(|value| *value > 0),
+            status: proxy
+                .get_property::<i32>("status")
+                .await
+                .ok()
+                .filter(|value| *value > 0),
+            health: proxy
+                .get_property::<i32>("health")
+                .await
+                .ok()
+                .filter(|value| *value > 0),
+            technology: proxy
+                .get_property::<String>("technology")
+                .await
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            cycle_count: proxy
+                .get_property::<i32>("cycleCount")
+                .await
+                .ok()
+                .filter(|value| *value >= 0),
+        })
     }
 
     pub async fn connectivity_info(&self, device_id: &str) -> Option<ConnectivityInfo> {
@@ -414,12 +439,7 @@ impl KdeConnectBackend {
         let loaded_plugins: Vec<String> = proxy.call("loadedPlugins", &()).await.unwrap_or_default();
 
         let battery = if is_reachable && loaded_plugins.iter().any(|p| p == "kdeconnect_battery") {
-            let charge = self.battery_charge(id).await;
-            let is_charging = self.battery_charging(id).await;
-            charge.map(|c| BatteryInfo {
-                charge: c,
-                is_charging: is_charging.unwrap_or(false),
-            })
+            self.battery_info(id).await
         } else {
             None
         };
@@ -557,7 +577,28 @@ impl KdeConnectBackend {
             dismissable: proxy.get_property("dismissable").await.ok().unwrap_or_default(),
             silent: proxy.get_property("silent").await.ok().unwrap_or_default(),
             reply_id: proxy.get_property("replyId").await.ok().unwrap_or_default(),
+            actions: proxy.get_property("actions").await.ok().unwrap_or_default(),
+            ongoing: proxy.get_property("ongoing").await.ok().unwrap_or(false),
         })
+    }
+
+    pub async fn send_notification_action(
+        &self,
+        device_id: &str,
+        internal_id: &str,
+        action: &str,
+    ) -> Result<()> {
+        let path = Self::plugin_path(device_id, "notifications");
+        self.conn
+            .call_method(
+                Some(KDE_CONNECT_SERVICE),
+                path.as_str(),
+                Some("org.kde.kdeconnect.device.notifications"),
+                "sendAction",
+                &(internal_id, action),
+            )
+            .await
+            .map(|_| ())
     }
 
     pub async fn dismiss_notification(&self, device_id: &str, internal_id: &str) -> Result<()> {

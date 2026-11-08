@@ -100,6 +100,12 @@ mod tests {
 pub struct BatteryInfo {
     pub charge: i32,
     pub is_charging: bool,
+    pub temperature: Option<f64>,
+    pub plugged: Option<i32>,
+    pub status: Option<i32>,
+    pub health: Option<i32>,
+    pub technology: Option<String>,
+    pub cycle_count: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -207,6 +213,8 @@ pub struct Notification {
     pub dismissable: bool,
     pub silent: bool,
     pub reply_id: String,
+    pub actions: Vec<String>,
+    pub ongoing: bool,
 }
 
 #[derive(Debug, Clone, Default)]

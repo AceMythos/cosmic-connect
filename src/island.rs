@@ -29,6 +29,7 @@ pub enum FeedActionKind {
     AcceptPairing,
     CancelPairing,
     DismissNotification(String),
+    NotificationAction { internal_id: String, action: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
