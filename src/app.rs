@@ -85,6 +85,7 @@ const HELPER_IDLE_GRACE: Duration = Duration::from_secs(8);
 const HELPER_HIDDEN_EXIT: Duration = Duration::from_secs(5);
 const ISLAND_NOTIFICATION_HOLD: Duration = Duration::from_secs(6);
 const ISLAND_NOTIFICATION_QUEUE_MAX: usize = 3;
+const ISLAND_NOTIFICATION_ACTION_MAX: usize = 3;
 
 static POPUP_AUTOSIZE_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("cosmic-connect-popup"));
@@ -409,6 +410,35 @@ fn is_android_hotspot_status(notif: &Notification) -> bool {
         .any(|field| field.to_ascii_lowercase().contains("mobile data hotspot"))
 }
 
+/// True when a phone notification is just the now-playing card for the player
+/// that the MPRIS feed is already showing. Those must not take the island: the
+/// notification is ongoing, so it would never expire and would outrank the real
+/// media card forever. The notification still appears in the popup list.
+fn is_media_notification(notif: &Notification, player: Option<&PlayerInfo>) -> bool {
+    let Some(player) = player else {
+        return false;
+    };
+    if !notif.ongoing || player.title.trim().is_empty() {
+        return false;
+    }
+    let app = notif.app_name.trim();
+    let player_name = player.player.trim();
+    !app.is_empty() && !player_name.is_empty() && app.eq_ignore_ascii_case(player_name)
+}
+
+/// Android media notifications expose the full MediaSession action list with
+/// accessibility-length labels. Shorten the ones we know so the 428 px island
+/// card stays readable; unknown actions pass through untouched.
+fn short_island_action_label(action: &str) -> &str {
+    match action {
+        "Rewind to previous item" => "Prev",
+        "Forward to next item" => "Next",
+        "Repeat mode off" | "Repeat mode on" => "Repeat",
+        "Shuffle on" | "Shuffle off" => "Shuffle",
+        other => other,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HeroTone {
     Accent,
@@ -674,8 +704,9 @@ fn island_notification_feed(device_id: &str, notif: &Notification) -> FeedActivi
         .iter()
         .map(|action| action.trim())
         .filter(|action| !action.is_empty() && !notif.internal_id.is_empty())
+        .take(ISLAND_NOTIFICATION_ACTION_MAX)
         .map(|action| FeedAction {
-            label: action.to_string(),
+            label: short_island_action_label(action).to_string(),
             icon: String::new(),
             action: FeedActionKind::NotificationAction {
                 internal_id: notif.internal_id.clone(),
@@ -4154,7 +4185,13 @@ impl cosmic::Application for CosmicConnect {
                     return Task::none();
                 };
 
-                if notif.silent || is_android_hotspot_status(&notif) {
+                let media_notification = self
+                    .drafts
+                    .get(&device_id)
+                    .and_then(|draft| draft.player.as_ref())
+                    .is_some_and(|player| is_media_notification(&notif, Some(player)));
+
+                if notif.silent || is_android_hotspot_status(&notif) || media_notification {
                     let island_changed = self.remove_island_notification(&device_id, &public_id);
                     let mut tasks = if island_changed {
                         self.refresh_island()
@@ -6101,9 +6138,9 @@ async fn pick_file_path() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_bytes, format_ms, is_quiet_action, is_valid_url, island_notification_feed,
-        parse_device_signal_path, truncate_text, CosmicConnect, DeviceDraft, Message, PlayerInfo,
-        PopupView, ShareKind,
+        format_bytes, format_ms, is_media_notification, is_quiet_action, is_valid_url,
+        island_notification_feed, parse_device_signal_path, truncate_text, CosmicConnect,
+        DeviceDraft, Message, PlayerInfo, PopupView, ShareKind,
     };
     use crate::island::{FeedActionKind, FeedKind};
     use crate::model::{ActionType, Notification};
@@ -6346,6 +6383,58 @@ mod tests {
             actions: Vec::new(),
             ongoing: false,
         }
+    }
+
+    #[test]
+    fn media_notification_is_matched_to_the_active_player() {
+        let mut notif = phone_notification("2", "7");
+        notif.app_name = "Metrolist".to_string();
+        notif.ongoing = true;
+        let player = PlayerInfo {
+            player: "Metrolist".to_string(),
+            title: "Let It Happen".to_string(),
+            ..PlayerInfo::default()
+        };
+
+        assert!(is_media_notification(&notif, Some(&player)));
+        assert!(!is_media_notification(&notif, None));
+
+        notif.ongoing = false;
+        assert!(!is_media_notification(&notif, Some(&player)));
+
+        notif.ongoing = true;
+        notif.app_name = "Signal".to_string();
+        assert!(!is_media_notification(&notif, Some(&player)));
+
+        notif.app_name = "Metrolist".to_string();
+        let idle_player = PlayerInfo::default();
+        assert!(!is_media_notification(&notif, Some(&idle_player)));
+    }
+
+    #[test]
+    fn island_notification_feed_caps_and_shortens_actions() {
+        let mut notif = phone_notification("2", "7");
+        notif.dismissable = false;
+        notif.actions = vec![
+            "Rewind to previous item".to_string(),
+            "Play".to_string(),
+            "Forward to next item".to_string(),
+            "Like".to_string(),
+            "Repeat mode off".to_string(),
+        ];
+
+        let feed = island_notification_feed("dev", &notif);
+        assert_eq!(feed.actions.len(), 3);
+        assert_eq!(feed.actions[0].label, "Prev");
+        assert_eq!(feed.actions[1].label, "Play");
+        assert_eq!(feed.actions[2].label, "Next");
+        assert_eq!(
+            feed.actions[0].action,
+            FeedActionKind::NotificationAction {
+                internal_id: "7".to_string(),
+                action: "Rewind to previous item".to_string(),
+            }
+        );
     }
 
     #[test]
