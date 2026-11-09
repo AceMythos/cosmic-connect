@@ -17,7 +17,7 @@ Star the repo if you use it.
   </tr>
   <tr>
     <td><a href="screenshots/panel.jpeg"><img src="screenshots/panel.jpeg" width="250"></a></td>
-    <td><a href="screenshots/popup.png"><img src="screenshots/popup.png" width="250" alt="COSMIC Connect v3 popup with device header, now-playing seek slider, quick actions, notifications, and sharing"></a></td>
+    <td><a href="screenshots/popup.jpeg"><img src="screenshots/popup.png" width="250" alt="COSMIC Connect v3 popup with device header, now-playing seek slider, quick actions, notifications, and sharing"></a></td>
   </tr>
 </table>
 
