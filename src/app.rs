@@ -8,7 +8,7 @@ use cosmic::app::Core;
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::cosmic_config::{Config as CosmicConfig, ConfigGet, ConfigSet};
 use cosmic::iced::animation::{Animation, Easing};
-use cosmic::iced::core::text::LineHeight;
+use cosmic::iced::core::text::{Ellipsize, EllipsizeHeightLimit, LineHeight};
 use cosmic::iced::core::Alignment;
 use cosmic::iced::gradient;
 use cosmic::iced::platform_specific::runtime::wayland::layer_surface::{
@@ -2369,6 +2369,31 @@ impl CosmicConnect {
         changed || self.island_notification_queue.len() != before
     }
 
+    /// Drops island notifications that are only the now-playing card for the
+    /// player we now know about. Notifications are fetched before the first
+    /// MPRIS poll, so this also cleans up after the startup race: otherwise the
+    /// ongoing card would keep the island forever and the media feed never wins.
+    fn prune_media_island_notifications(&mut self, device_id: &str) -> bool {
+        let keys: Vec<String> = {
+            let Some(draft) = self.drafts.get(device_id) else {
+                return false;
+            };
+            let Some(player) = draft.player.as_ref() else {
+                return false;
+            };
+            draft
+                .notifications
+                .iter()
+                .filter(|notification| is_media_notification(notification, Some(player)))
+                .map(|notification| island_notification_key(device_id, &notification.id))
+                .collect()
+        };
+
+        keys.iter().fold(false, |changed, key| {
+            self.remove_island_notification_key(key) || changed
+        })
+    }
+
     fn clear_transient_island_notifications(&mut self, device_id: &str) -> bool {
         let prefix = format!("notification:{device_id}:");
         let changed = self
@@ -3578,10 +3603,14 @@ impl CosmicConnect {
             text::text(truncate_text(title.trim(), 40))
                 .size(14.5)
                 .line_height(LineHeight::Absolute(17.0.into()))
+                .wrapping(Wrapping::None)
+                .ellipsize(Ellipsize::End)
                 .class(theme::Text::Color(Color::from_rgb(0.97, 0.98, 1.0))),
             text::text(truncate_text(subtitle.trim(), 52))
                 .size(11.5)
                 .line_height(LineHeight::Absolute(14.0.into()))
+                .wrapping(Wrapping::None)
+                .ellipsize(Ellipsize::End)
                 .class(theme::Text::Color(Color::from_rgb(0.70, 0.74, 0.82))),
         ]
         .spacing(1);
@@ -3629,6 +3658,8 @@ impl CosmicConnect {
                 text::text(truncate_text(detail.trim(), 64))
                     .size(11.0)
                     .line_height(LineHeight::Absolute(14.0.into()))
+                    .wrapping(Wrapping::None)
+                    .ellipsize(Ellipsize::End)
                     .class(theme::Text::Color(Color::from_rgb(0.78, 0.81, 0.88))),
             );
         }
@@ -4533,6 +4564,7 @@ impl cosmic::Application for CosmicConnect {
                 if is_playing {
                     draft.player_last_active = Some(now);
                 }
+                self.prune_media_island_notifications(&device_id);
                 return self.refresh_island();
             }
             Message::ConnectivityUpdated(device_id, connectivity) => {
