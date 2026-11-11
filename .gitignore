@@ -7,3 +7,7 @@ build/
 *.swo
 *~
 .DS_Store
+node_modules/
+.playwright-mcp
+package.json
+package-lock.json
